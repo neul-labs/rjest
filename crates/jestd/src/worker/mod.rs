@@ -27,6 +27,7 @@ pub struct WorkerConfig {
     pub clear_mocks: bool,
     pub reset_mocks: bool,
     pub restore_mocks: bool,
+    pub update_snapshots: bool,
 }
 
 /// Result from running a test file
@@ -36,6 +37,16 @@ pub struct TestFileResult {
     pub passed: bool,
     pub duration_ms: u64,
     pub tests: Vec<TestResult>,
+    pub snapshot_summary: Option<SnapshotSummary>,
+}
+
+/// Snapshot summary from a test file
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct SnapshotSummary {
+    pub added: u32,
+    pub updated: u32,
+    pub matched: u32,
+    pub unmatched: u32,
 }
 
 /// Result from a single test

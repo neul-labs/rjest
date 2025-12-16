@@ -6,6 +6,7 @@ mod config;
 mod discovery;
 mod server;
 mod transform;
+mod watch;
 mod worker;
 
 #[tokio::main]

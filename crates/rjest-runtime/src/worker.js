@@ -210,6 +210,176 @@ let testResults = [];
 let currentDescribe = [];
 let hooks = { beforeAll: [], afterAll: [], beforeEach: [], afterEach: [] };
 
+// Snapshot state
+let snapshotState = {
+  snapshotPath: null,
+  snapshots: {},      // key -> snapshot value
+  dirty: false,       // whether snapshots need to be written
+  counter: {},        // test name -> counter for multiple snapshots in same test
+  currentTestName: null,
+  updateSnapshot: false, // -u flag
+  added: 0,
+  updated: 0,
+  matched: 0,
+  unmatched: 0,
+};
+
+/**
+ * Initialize snapshot state for a test file
+ */
+function initSnapshotState(testPath, updateSnapshot) {
+  const dir = path.dirname(testPath);
+  const base = path.basename(testPath);
+  const snapshotDir = path.join(dir, '__snapshots__');
+  const snapshotPath = path.join(snapshotDir, base + '.snap');
+
+  snapshotState = {
+    snapshotPath,
+    snapshots: {},
+    dirty: false,
+    counter: {},
+    currentTestName: null,
+    updateSnapshot: updateSnapshot || false,
+    added: 0,
+    updated: 0,
+    matched: 0,
+    unmatched: 0,
+  };
+
+  // Load existing snapshots
+  if (fs.existsSync(snapshotPath)) {
+    try {
+      const content = fs.readFileSync(snapshotPath, 'utf-8');
+      snapshotState.snapshots = parseSnapshotFile(content);
+    } catch (e) {
+      console.error('Error loading snapshots:', e.message);
+    }
+  }
+}
+
+/**
+ * Parse Jest snapshot file format
+ */
+function parseSnapshotFile(content) {
+  const snapshots = {};
+  // Match exports[`key`] = `value`;
+  const regex = /exports\[`([^`]+)`\]\s*=\s*`([\s\S]*?)`;/g;
+  let match;
+  while ((match = regex.exec(content)) !== null) {
+    const key = match[1];
+    // Unescape backticks and backslashes in the value
+    const value = match[2].replace(/\\`/g, '`').replace(/\\\\/g, '\\');
+    snapshots[key] = value;
+  }
+  return snapshots;
+}
+
+/**
+ * Serialize a value for snapshot
+ */
+function serializeSnapshot(value) {
+  if (typeof value === 'string') {
+    return value;
+  }
+  return JSON.stringify(value, null, 2);
+}
+
+/**
+ * Get the snapshot key for current test
+ */
+function getSnapshotKey(hint) {
+  const testName = snapshotState.currentTestName || 'unknown test';
+  const counter = snapshotState.counter[testName] || 1;
+  snapshotState.counter[testName] = counter + 1;
+  return hint ? `${testName}: ${hint} ${counter}` : `${testName} ${counter}`;
+}
+
+/**
+ * Match against snapshot
+ */
+function matchSnapshot(actual, hint) {
+  const key = getSnapshotKey(hint);
+  const serialized = serializeSnapshot(actual);
+  const existing = snapshotState.snapshots[key];
+
+  if (existing === undefined) {
+    // New snapshot
+    if (snapshotState.updateSnapshot || process.env.CI !== 'true') {
+      snapshotState.snapshots[key] = serialized;
+      snapshotState.dirty = true;
+      snapshotState.added++;
+      return { pass: true };
+    } else {
+      snapshotState.unmatched++;
+      return {
+        pass: false,
+        message: `New snapshot was not written. Run with -u to update.`,
+      };
+    }
+  }
+
+  if (existing === serialized) {
+    snapshotState.matched++;
+    return { pass: true };
+  }
+
+  // Mismatch
+  if (snapshotState.updateSnapshot) {
+    snapshotState.snapshots[key] = serialized;
+    snapshotState.dirty = true;
+    snapshotState.updated++;
+    return { pass: true };
+  }
+
+  snapshotState.unmatched++;
+  return {
+    pass: false,
+    message: `Snapshot mismatch`,
+    expected: existing,
+    received: serialized,
+  };
+}
+
+/**
+ * Save snapshots to file if dirty
+ */
+function saveSnapshots() {
+  if (!snapshotState.dirty || !snapshotState.snapshotPath) {
+    return;
+  }
+
+  const dir = path.dirname(snapshotState.snapshotPath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+
+  // Generate snapshot file content in Jest format
+  let content = '// Jest Snapshot v1, https://goo.gl/fbAQLP\n\n';
+
+  const sortedKeys = Object.keys(snapshotState.snapshots).sort();
+  for (const key of sortedKeys) {
+    const value = snapshotState.snapshots[key];
+    // Escape backticks and backslashes
+    const escaped = value.replace(/\\/g, '\\\\').replace(/`/g, '\\`');
+    content += `exports[\`${key}\`] = \`${escaped}\`;\n\n`;
+  }
+
+  fs.writeFileSync(snapshotState.snapshotPath, content);
+  snapshotState.dirty = false;
+}
+
+/**
+ * Get snapshot summary for test results
+ */
+function getSnapshotSummary() {
+  return {
+    added: snapshotState.added,
+    updated: snapshotState.updated,
+    matched: snapshotState.matched,
+    unmatched: snapshotState.unmatched,
+  };
+}
+
 // Create expect from jest-expect or a simple implementation
 let expect;
 try {
@@ -357,6 +527,36 @@ function createSimpleExpect() {
         );
         if (!found) {
           throw new Error(`Expected mock to have been called with ${JSON.stringify(args)}`);
+        }
+      },
+      toMatchSnapshot(hint) {
+        const result = matchSnapshot(actual, hint);
+        if (!result.pass) {
+          const error = new Error(result.message);
+          if (result.expected !== undefined) {
+            error.matcherResult = {
+              message: `Snapshot mismatch:\n\nExpected:\n${result.expected}\n\nReceived:\n${result.received}`,
+            };
+          }
+          throw error;
+        }
+      },
+      toMatchInlineSnapshot(inlineSnapshot) {
+        const serialized = serializeSnapshot(actual);
+        // Normalize whitespace for comparison
+        const normalizedActual = serialized.trim();
+        const normalizedExpected = (inlineSnapshot || '').trim();
+
+        if (inlineSnapshot === undefined) {
+          // No inline snapshot provided - this would need source code rewriting
+          // For now, just pass (Jest would update the source file)
+          return;
+        }
+
+        if (normalizedActual !== normalizedExpected) {
+          throw new Error(
+            `Inline snapshot mismatch:\n\nExpected:\n${normalizedExpected}\n\nReceived:\n${normalizedActual}`
+          );
         }
       },
       not: {
@@ -591,6 +791,9 @@ const jestGlobals = {
   test(name, fn, timeout = 5000) {
     const fullName = [...currentDescribe, name].join(' > ');
     const startTime = Date.now();
+
+    // Set current test name for snapshot tracking
+    snapshotState.currentTestName = fullName;
 
     const result = {
       name: fullName,
@@ -939,6 +1142,10 @@ async function runTestFile(request) {
   currentDescribe = [];
   hooks = { beforeAll: [], afterAll: [], beforeEach: [], afterEach: [] };
 
+  // Initialize snapshot state
+  const updateSnapshot = config?.update_snapshots || false;
+  initSnapshotState(testPath, updateSnapshot);
+
   // Reset fake timers
   if (fakeTimersEnabled) {
     uninstallFakeTimers();
@@ -1028,6 +1235,9 @@ async function runTestFile(request) {
     uninstallFakeTimers();
   }
 
+  // Save any new/updated snapshots
+  saveSnapshots();
+
   const duration = Date.now() - startTime;
   const passed = testResults.every((t) => t.status === 'passed' || t.status === 'skipped' || t.status === 'todo');
 
@@ -1036,6 +1246,7 @@ async function runTestFile(request) {
     passed,
     duration_ms: duration,
     tests: testResults,
+    snapshot_summary: getSnapshotSummary(),
   };
 }
 

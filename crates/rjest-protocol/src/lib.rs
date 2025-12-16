@@ -6,6 +6,12 @@ use serde::{Deserialize, Serialize};
 pub enum Request {
     /// Run tests matching the given patterns
     Run(RunRequest),
+    /// Start a watch session
+    WatchStart(WatchStartRequest),
+    /// Poll for changes in watch mode
+    WatchPoll(WatchPollRequest),
+    /// Stop a watch session
+    WatchStop(WatchStopRequest),
     /// Ping the daemon to check if it's alive
     Ping,
     /// Get daemon status and cache statistics
@@ -20,6 +26,12 @@ pub enum Request {
 pub enum Response {
     /// Test run results
     Run(RunResponse),
+    /// Watch session started with initial run results
+    WatchStarted(WatchStartedResponse),
+    /// Watch poll results
+    WatchPoll(WatchPollResponse),
+    /// Watch session stopped
+    WatchStopped,
     /// Pong response to ping
     Pong,
     /// Daemon status information
@@ -70,6 +82,53 @@ pub struct RunFlags {
     pub test_name_pattern: Option<String>,
     /// Verbose output
     pub verbose: bool,
+}
+
+/// Request to start watch mode
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatchStartRequest {
+    /// Absolute path to project root
+    pub project_root: String,
+    /// Test file patterns to match
+    pub patterns: Vec<String>,
+    /// CLI flags (subset relevant to watch)
+    pub flags: RunFlags,
+}
+
+/// Request to poll for changes in watch mode
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatchPollRequest {
+    /// Session ID from WatchStarted response
+    pub session_id: String,
+    /// Timeout in milliseconds for blocking wait
+    pub timeout_ms: u64,
+}
+
+/// Request to stop watch mode
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatchStopRequest {
+    /// Session ID from WatchStarted response
+    pub session_id: String,
+}
+
+/// Response when watch mode starts
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatchStartedResponse {
+    /// Session ID for subsequent poll/stop requests
+    pub session_id: String,
+    /// Initial test run results
+    pub initial_run: RunResponse,
+}
+
+/// Response from watch poll
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatchPollResponse {
+    /// Whether files have changed since last poll
+    pub has_changes: bool,
+    /// New test run results (if has_changes is true)
+    pub run_result: Option<RunResponse>,
+    /// Files that changed
+    pub changed_files: Vec<String>,
 }
 
 /// Response containing test results

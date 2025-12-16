@@ -97,21 +97,26 @@ impl Args {
         Ok(RunRequest {
             project_root,
             patterns: self.patterns.clone(),
-            flags: RunFlags {
-                run_in_band: self.run_in_band,
-                watch: self.watch || self.watch_all,
-                bail: self.bail,
-                json_output: self.json,
-                machine_output: self.machine,
-                max_workers: self.max_workers,
-                config_path: self.config.clone(),
-                only_changed: self.only_changed,
-                find_related_tests: self.find_related_tests.clone(),
-                update_snapshots: self.update_snapshots,
-                coverage: self.coverage,
-                test_name_pattern: self.test_name_pattern.clone(),
-                verbose: self.verbose,
-            },
+            flags: self.to_run_flags(),
         })
+    }
+
+    /// Extract just the RunFlags from args
+    pub fn to_run_flags(&self) -> RunFlags {
+        RunFlags {
+            run_in_band: self.run_in_band,
+            watch: self.watch || self.watch_all,
+            bail: self.bail,
+            json_output: self.json,
+            machine_output: self.machine,
+            max_workers: self.max_workers,
+            config_path: self.config.clone(),
+            only_changed: self.only_changed,
+            find_related_tests: self.find_related_tests.clone(),
+            update_snapshots: self.update_snapshots,
+            coverage: self.coverage,
+            test_name_pattern: self.test_name_pattern.clone(),
+            verbose: self.verbose,
+        }
     }
 }

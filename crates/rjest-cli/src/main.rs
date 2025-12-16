@@ -35,6 +35,11 @@ fn run_tests(args: Args) -> Result<()> {
     // Ensure daemon is running
     daemon::ensure_running()?;
 
+    // Handle watch mode
+    if args.watch || args.watch_all {
+        return run_watch_mode(args);
+    }
+
     // Build request from args
     let request = args.to_run_request()?;
 
@@ -58,6 +63,97 @@ fn run_tests(args: Args) -> Result<()> {
             anyhow::bail!("Unexpected response from daemon");
         }
     }
+}
+
+fn run_watch_mode(args: Args) -> Result<()> {
+    use rjest_protocol::{
+        Request, Response, WatchStartRequest, WatchPollRequest, WatchStopRequest,
+    };
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    // Set up Ctrl+C handler
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+    ctrlc::set_handler(move || {
+        eprintln!("\n\nWatch mode interrupted");
+        r.store(false, Ordering::SeqCst);
+    })?;
+
+    // Build watch start request
+    let watch_request = WatchStartRequest {
+        project_root: std::env::current_dir()?.to_string_lossy().to_string(),
+        patterns: args.patterns.clone(),
+        flags: args.to_run_flags(),
+    };
+
+    // Start watch session
+    eprintln!("\nWatch mode enabled. Press Ctrl+C to exit.\n");
+    let response = client::send_request(Request::WatchStart(watch_request))?;
+
+    let session_id = match response {
+        Response::WatchStarted(watch_started) => {
+            // Render initial results
+            output::render(&watch_started.initial_run, &args)?;
+            if !watch_started.initial_run.success {
+                eprintln!("\nTests failed. Watching for changes...");
+            } else {
+                eprintln!("\nWatching for changes...");
+            }
+            watch_started.session_id
+        }
+        Response::Error(err) => {
+            anyhow::bail!("Failed to start watch mode: {}", err.message);
+        }
+        _ => {
+            anyhow::bail!("Unexpected response from daemon");
+        }
+    };
+
+    // Poll loop
+    while running.load(Ordering::SeqCst) {
+        let poll_request = WatchPollRequest {
+            session_id: session_id.clone(),
+            timeout_ms: 1000, // Poll every second
+        };
+
+        let response = client::send_request(Request::WatchPoll(poll_request))?;
+
+        match response {
+            Response::WatchPoll(poll_response) => {
+                if poll_response.has_changes {
+                    if !poll_response.changed_files.is_empty() {
+                        eprintln!("\n\x1b[2m--- File changes detected ---\x1b[0m");
+                        for file in &poll_response.changed_files {
+                            eprintln!("  {}", file);
+                        }
+                    }
+
+                    if let Some(run_result) = poll_response.run_result {
+                        eprintln!();
+                        output::render(&run_result, &args)?;
+                        if run_result.success {
+                            eprintln!("\nWatching for changes...");
+                        } else {
+                            eprintln!("\nTests failed. Watching for changes...");
+                        }
+                    }
+                }
+            }
+            Response::Error(err) => {
+                eprintln!("Watch error: {}", err.message);
+            }
+            _ => {}
+        }
+    }
+
+    // Stop watch session
+    let stop_request = WatchStopRequest {
+        session_id: session_id.clone(),
+    };
+    let _ = client::send_request(Request::WatchStop(stop_request));
+
+    Ok(())
 }
 
 mod fallback {

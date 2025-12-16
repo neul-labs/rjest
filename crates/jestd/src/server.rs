@@ -3,20 +3,33 @@ use nng::{Protocol, Socket};
 use rjest_protocol::{
     ipc_address, socket_path, ErrorCode, ErrorResponse, Request, Response, RunResponse,
     StatusResponse, TestFileResult as ProtoTestFileResult, TestResult as ProtoTestResult,
-    TestStatus, TestError as ProtoTestError, SourceLocation,
+    TestStatus, TestError as ProtoTestError,
     CacheStats as ProtoCacheStats, WorkerStats as ProtoWorkerStats, RunRequest,
+    WatchStartRequest, WatchPollRequest, WatchStopRequest,
+    WatchStartedResponse, WatchPollResponse, RunFlags,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
+use uuid::Uuid;
 
 use crate::config::JestConfig;
 use crate::discovery::TestDiscovery;
 use crate::transform::Transformer;
+use crate::watch::FileWatcher;
 use crate::worker::{find_worker_script, WorkerConfig, WorkerPool};
+
+/// Active watch session
+struct WatchSession {
+    project_root: PathBuf,
+    patterns: Vec<String>,
+    flags: RunFlags,
+    watcher: FileWatcher,
+    all_test_files: Vec<PathBuf>,
+}
 
 /// Daemon state shared across requests
 struct DaemonState {
@@ -27,6 +40,8 @@ struct DaemonState {
     configs: Mutex<HashMap<PathBuf, JestConfig>>,
     /// Transform cache directory
     cache_dir: PathBuf,
+    /// Active watch sessions
+    watch_sessions: Mutex<HashMap<String, WatchSession>>,
 }
 
 impl DaemonState {
@@ -41,6 +56,7 @@ impl DaemonState {
             total_tests_run: AtomicU64::new(0),
             configs: Mutex::new(HashMap::new()),
             cache_dir,
+            watch_sessions: Mutex::new(HashMap::new()),
         }
     }
 
@@ -165,6 +181,39 @@ fn handle_request(msg: &[u8], state: &Arc<DaemonState>) -> Response {
                 }
             }
         }
+
+        Request::WatchStart(watch_request) => {
+            match start_watch_session(&watch_request, state) {
+                Ok(response) => Response::WatchStarted(response),
+                Err(e) => {
+                    error!("Watch start failed: {}", e);
+                    Response::Error(ErrorResponse {
+                        code: ErrorCode::InternalError,
+                        message: e.to_string(),
+                        details: Some(format!("{:?}", e)),
+                    })
+                }
+            }
+        }
+
+        Request::WatchPoll(poll_request) => {
+            match poll_watch_session(&poll_request, state) {
+                Ok(response) => Response::WatchPoll(response),
+                Err(e) => {
+                    error!("Watch poll failed: {}", e);
+                    Response::Error(ErrorResponse {
+                        code: ErrorCode::InternalError,
+                        message: e.to_string(),
+                        details: Some(format!("{:?}", e)),
+                    })
+                }
+            }
+        }
+
+        Request::WatchStop(stop_request) => {
+            stop_watch_session(&stop_request, state);
+            Response::WatchStopped
+        }
     }
 }
 
@@ -235,6 +284,7 @@ fn execute_tests(request: &RunRequest, state: &Arc<DaemonState>) -> Result<RunRe
         clear_mocks: config.clear_mocks,
         reset_mocks: config.reset_mocks,
         restore_mocks: config.restore_mocks,
+        update_snapshots: request.flags.update_snapshots,
     };
 
     let max_workers = if request.flags.run_in_band {
@@ -257,6 +307,12 @@ fn execute_tests(request: &RunRequest, state: &Arc<DaemonState>) -> Result<RunRe
     let mut num_skipped_tests = 0u32;
     let mut num_todo_tests = 0u32;
 
+    // Snapshot aggregation
+    let mut snap_added = 0u32;
+    let mut snap_updated = 0u32;
+    let mut snap_matched = 0u32;
+    let mut snap_unmatched = 0u32;
+
     for result in results {
         match result {
             Ok(file_result) => {
@@ -264,6 +320,14 @@ fn execute_tests(request: &RunRequest, state: &Arc<DaemonState>) -> Result<RunRe
                     num_passed_suites += 1;
                 } else {
                     num_failed_suites += 1;
+                }
+
+                // Aggregate snapshot stats
+                if let Some(snap) = &file_result.snapshot_summary {
+                    snap_added += snap.added;
+                    snap_updated += snap.updated;
+                    snap_matched += snap.matched;
+                    snap_unmatched += snap.unmatched;
                 }
 
                 let tests: Vec<ProtoTestResult> = file_result
@@ -331,6 +395,20 @@ fn execute_tests(request: &RunRequest, state: &Arc<DaemonState>) -> Result<RunRe
         num_passed_tests, num_failed_tests, duration_ms
     );
 
+    // Build snapshot summary if any snapshots were processed
+    let snapshot_summary = if snap_added > 0 || snap_updated > 0 || snap_matched > 0 || snap_unmatched > 0 {
+        Some(rjest_protocol::SnapshotSummary {
+            added: snap_added,
+            updated: snap_updated,
+            removed: 0, // TODO: Track removed snapshots
+            matched: snap_matched,
+            unmatched: snap_unmatched,
+            unchecked: 0, // TODO: Track unchecked snapshots
+        })
+    } else {
+        None
+    };
+
     Ok(RunResponse {
         success,
         num_passed_suites,
@@ -341,6 +419,149 @@ fn execute_tests(request: &RunRequest, state: &Arc<DaemonState>) -> Result<RunRe
         num_todo_tests,
         duration_ms,
         test_results,
-        snapshot_summary: None,
+        snapshot_summary,
     })
+}
+
+/// Start a new watch session
+fn start_watch_session(
+    request: &WatchStartRequest,
+    state: &Arc<DaemonState>,
+) -> Result<WatchStartedResponse> {
+    let project_root = PathBuf::from(&request.project_root);
+    info!("Starting watch session for {}", project_root.display());
+
+    // Load configuration
+    let config = state.get_or_load_config(&project_root)?;
+
+    // Discover all test files
+    let discovery = TestDiscovery::new(config.clone());
+    let all_test_files = discovery.find_tests_matching(&request.patterns)?;
+
+    // Create file watcher
+    let mut watcher = FileWatcher::new()?;
+
+    // Watch all roots
+    for root in &config.roots {
+        if root.exists() {
+            watcher.watch(root)?;
+        }
+    }
+    // Also watch the project root
+    watcher.watch(&project_root)?;
+
+    // Run initial tests
+    let run_request = RunRequest {
+        project_root: request.project_root.clone(),
+        patterns: request.patterns.clone(),
+        flags: request.flags.clone(),
+    };
+    let initial_run = execute_tests(&run_request, state)?;
+
+    // Generate session ID
+    let session_id = Uuid::new_v4().to_string();
+
+    // Store session
+    let session = WatchSession {
+        project_root,
+        patterns: request.patterns.clone(),
+        flags: request.flags.clone(),
+        watcher,
+        all_test_files,
+    };
+
+    let mut sessions = state.watch_sessions.lock().unwrap();
+    sessions.insert(session_id.clone(), session);
+
+    info!("Watch session {} started", session_id);
+
+    Ok(WatchStartedResponse {
+        session_id,
+        initial_run,
+    })
+}
+
+/// Poll for changes in a watch session
+fn poll_watch_session(
+    request: &WatchPollRequest,
+    state: &Arc<DaemonState>,
+) -> Result<WatchPollResponse> {
+    let timeout = Duration::from_millis(request.timeout_ms);
+
+    // Get the session
+    let mut sessions = state.watch_sessions.lock().unwrap();
+    let session = sessions
+        .get_mut(&request.session_id)
+        .ok_or_else(|| anyhow::anyhow!("Watch session not found: {}", request.session_id))?;
+
+    // Wait for changes with timeout
+    let changed_files = session.watcher.wait_for_changes(timeout);
+
+    if changed_files.is_empty() {
+        return Ok(WatchPollResponse {
+            has_changes: false,
+            run_result: None,
+            changed_files: vec![],
+        });
+    }
+
+    info!("Detected {} changed files", changed_files.len());
+
+    // Find affected tests
+    let affected_tests = crate::watch::get_affected_tests(&changed_files, &session.all_test_files);
+
+    let changed_file_strings: Vec<String> = changed_files
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+
+    if affected_tests.is_empty() {
+        return Ok(WatchPollResponse {
+            has_changes: true,
+            run_result: None,
+            changed_files: changed_file_strings,
+        });
+    }
+
+    info!("Running {} affected tests", affected_tests.len());
+
+    // Update the session's all_test_files (in case new test files were added)
+    let config = state.get_or_load_config(&session.project_root)?;
+    let discovery = TestDiscovery::new(config);
+    if let Ok(new_test_files) = discovery.find_tests_matching(&session.patterns) {
+        session.all_test_files = new_test_files;
+    }
+
+    // Re-run affected tests
+    let test_patterns: Vec<String> = affected_tests
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+
+    let run_request = RunRequest {
+        project_root: session.project_root.to_string_lossy().to_string(),
+        patterns: test_patterns,
+        flags: session.flags.clone(),
+    };
+
+    // Release the lock before executing tests
+    drop(sessions);
+
+    let run_result = execute_tests(&run_request, state)?;
+
+    Ok(WatchPollResponse {
+        has_changes: true,
+        run_result: Some(run_result),
+        changed_files: changed_file_strings,
+    })
+}
+
+/// Stop a watch session
+fn stop_watch_session(request: &WatchStopRequest, state: &Arc<DaemonState>) {
+    let mut sessions = state.watch_sessions.lock().unwrap();
+    if sessions.remove(&request.session_id).is_some() {
+        info!("Watch session {} stopped", request.session_id);
+    } else {
+        warn!("Watch session {} not found", request.session_id);
+    }
 }
