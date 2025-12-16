@@ -1,0 +1,22 @@
+[package]
+name = "rjest-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Jest-compatible CLI that communicates with jestd daemon"
+
+[[bin]]
+name = "jest"
+path = "src/main.rs"
+
+[dependencies]
+rjest-protocol = { workspace = true }
+tokio = { workspace = true }
+nng = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

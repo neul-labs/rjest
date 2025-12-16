@@ -1,0 +1,5 @@
+/target
+memista.*
+*.usearch
+.vscode
+*.env

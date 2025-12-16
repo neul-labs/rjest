@@ -1,0 +1,28 @@
+[package]
+name = "jestd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Jest-compatible test runner daemon"
+
+[[bin]]
+name = "jestd"
+path = "src/main.rs"
+
+[dependencies]
+rjest-protocol = { workspace = true }
+tokio = { workspace = true }
+nng = { workspace = true }
+sled = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+blake3 = { workspace = true }
+notify = { workspace = true }
+glob = { workspace = true }
+regex = "1"
+walkdir = "2"
+dirs = "5"

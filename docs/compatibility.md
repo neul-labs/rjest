@@ -38,11 +38,72 @@
 - The CLI clearly prints which runs went through the fallback path so teams can track remaining gaps.
 - Fallback still benefits from `rjest`’s CLI ergonomics because the same command entry points are used; only the execution engine switches to Jest for that invocation.
 
+## CLI Flag Matrix
+
+| Flag | Phase | Status | Notes |
+|------|-------|--------|-------|
+| `<pattern>` | 1 | Planned | Regex patterns to filter test files |
+| `--runInBand`, `-i` | 1 | Planned | Run tests serially |
+| `--watch` | 1 | Planned | Re-run on file changes |
+| `--watchAll` | 1 | Planned | Re-run all tests on changes |
+| `--bail`, `-b` | 1 | Planned | Exit after first failure |
+| `--maxWorkers`, `-w` | 1 | Planned | Number of worker processes |
+| `--json` | 1 | Planned | Output results as JSON |
+| `--machine` | 1 | Planned | Structured output for AI agents |
+| `--config`, `-c` | 1 | Planned | Path to config file |
+| `--fallback-to-jest` | 1 | Planned | Force upstream Jest |
+| `--testNamePattern`, `-t` | 2 | Planned | Filter by test name |
+| `--onlyChanged`, `-o` | 3 | Planned | Run affected tests only |
+| `--findRelatedTests` | 3 | Planned | Run tests related to files |
+| `--coverage` | 4 | Planned | Collect coverage |
+| `-u`, `--updateSnapshot` | 4 | Planned | Update snapshots |
+| `--env` | 4 | Planned | Test environment |
+| `--reporters` | 4 | Planned | Custom reporters |
+| `--notify` | 6 | Fallback | Desktop notifications |
+| `--watchman` | — | Fallback | Watchman integration |
+
+## Configuration Field Matrix
+
+| Field | Phase | Status | Notes |
+|-------|-------|--------|-------|
+| `testMatch` | 1 | Planned | Glob patterns for test files |
+| `testRegex` | 1 | Planned | Regex for test files |
+| `roots` | 1 | Planned | Directories to search |
+| `transform` | 1 | Partial | SWC only; custom triggers fallback |
+| `setupFiles` | 2 | Planned | Pre-framework scripts |
+| `setupFilesAfterEnv` | 2 | Planned | Post-framework scripts |
+| `moduleNameMapper` | 2 | Planned | Path aliases |
+| `moduleDirectories` | 2 | Planned | Module search directories |
+| `projects` | 2 | Planned | Multi-project support |
+| `testEnvironment` | 4 | Partial | `node` first; `jsdom` Phase 4 |
+| `snapshotSerializers` | 4 | Planned | Custom serializers |
+| `coverageReporters` | 4 | Planned | Output formats |
+| `automock` | — | Fallback | Auto-mocking deferred |
+| `resolver` | — | Fallback | Custom resolvers |
+
+## Runtime API Matrix
+
+| API | Phase | Status | Notes |
+|-----|-------|--------|-------|
+| `test()` / `it()` | 1 | Planned | Define tests |
+| `describe()` | 1 | Planned | Test suites |
+| `beforeEach()` / `afterEach()` | 1 | Planned | Test hooks |
+| `beforeAll()` / `afterAll()` | 1 | Planned | Suite hooks |
+| `expect()` + core matchers | 1 | Planned | Assertions |
+| `jest.fn()` | 2 | Planned | Mock functions |
+| `jest.spyOn()` | 2 | Planned | Spy on methods |
+| `jest.mock()` | 2 | Planned | Manual mocking |
+| `jest.useFakeTimers()` | 2 | Planned | Fake timers |
+| `toMatchSnapshot()` | 4 | Planned | Snapshot testing |
+| `test.each()` | 4 | Planned | Parameterized tests |
+| `test.concurrent()` | — | Fallback | Concurrent tests |
+| `jest.createMockFromModule()` | — | Fallback | Auto-generate mocks |
+
 ## Known gaps (initial release)
 
 - **Automocking modes:** Auto mock hoisting and virtual mocks that rely on Jest internals are not yet implemented; users enabling them should opt into fallback.
 - **Exotic environments:** Custom environments that depend on private Jest APIs (beyond the documented `jest-environment-*` contract) may require fallback until we cover the necessary integration points.
-- **Custom transformers:** Projects that rely on bespoke Babel plugins or preprocessors outside of SWC’s reach will need fallback until those transforms can be re-expressed or replaced.
+- **Custom transformers:** Projects that rely on bespoke Babel plugins or preprocessors outside of SWC's reach will need fallback until those transforms can be re-expressed or replaced.
 
 ## Adoption checklist
 

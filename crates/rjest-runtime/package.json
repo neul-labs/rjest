@@ -1,0 +1,17 @@
+{
+  "name": "rjest-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Node runtime components for rjest",
+  "main": "src/index.js",
+  "scripts": {
+    "load-config": "node src/load-config.js"
+  },
+  "dependencies": {
+    "jest-config": "^29.7.0",
+    "jest-runtime": "^29.7.0",
+    "jest-environment-node": "^29.7.0",
+    "@jest/globals": "^29.7.0",
+    "expect": "^29.7.0"
+  }
+}

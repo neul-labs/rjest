@@ -1,0 +1,251 @@
+use serde::{Deserialize, Serialize};
+
+/// Request sent from CLI to daemon
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum Request {
+    /// Run tests matching the given patterns
+    Run(RunRequest),
+    /// Ping the daemon to check if it's alive
+    Ping,
+    /// Get daemon status and cache statistics
+    Status,
+    /// Shutdown the daemon
+    Shutdown,
+}
+
+/// Response sent from daemon to CLI
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum Response {
+    /// Test run results
+    Run(RunResponse),
+    /// Pong response to ping
+    Pong,
+    /// Daemon status information
+    Status(StatusResponse),
+    /// Acknowledgment of shutdown request
+    ShuttingDown,
+    /// Error occurred processing request
+    Error(ErrorResponse),
+}
+
+/// Request to run tests
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunRequest {
+    /// Absolute path to project root
+    pub project_root: String,
+    /// Test file patterns to match
+    pub patterns: Vec<String>,
+    /// CLI flags
+    pub flags: RunFlags,
+}
+
+/// CLI flags for test runs
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RunFlags {
+    /// Run tests serially in a single worker
+    pub run_in_band: bool,
+    /// Watch mode - re-run on file changes
+    pub watch: bool,
+    /// Exit after first test failure
+    pub bail: bool,
+    /// Output results as JSON
+    pub json_output: bool,
+    /// Machine-readable output for AI agents
+    pub machine_output: bool,
+    /// Maximum number of worker processes
+    pub max_workers: Option<u32>,
+    /// Path to Jest config file
+    pub config_path: Option<String>,
+    /// Only run tests affected by changed files
+    pub only_changed: bool,
+    /// Run tests related to specific source files
+    pub find_related_tests: Vec<String>,
+    /// Update snapshots
+    pub update_snapshots: bool,
+    /// Collect coverage
+    pub coverage: bool,
+    /// Filter by test name pattern
+    pub test_name_pattern: Option<String>,
+    /// Verbose output
+    pub verbose: bool,
+}
+
+/// Response containing test results
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunResponse {
+    /// Overall success (all tests passed)
+    pub success: bool,
+    /// Number of test suites that passed
+    pub num_passed_suites: u32,
+    /// Number of test suites that failed
+    pub num_failed_suites: u32,
+    /// Number of individual tests that passed
+    pub num_passed_tests: u32,
+    /// Number of individual tests that failed
+    pub num_failed_tests: u32,
+    /// Number of tests skipped
+    pub num_skipped_tests: u32,
+    /// Number of todo tests
+    pub num_todo_tests: u32,
+    /// Total execution time in milliseconds
+    pub duration_ms: u64,
+    /// Per-file results
+    pub test_results: Vec<TestFileResult>,
+    /// Snapshot summary
+    pub snapshot_summary: Option<SnapshotSummary>,
+}
+
+/// Results for a single test file
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestFileResult {
+    /// Absolute path to test file
+    pub path: String,
+    /// Whether this file passed
+    pub passed: bool,
+    /// Execution time for this file
+    pub duration_ms: u64,
+    /// Individual test results
+    pub tests: Vec<TestResult>,
+    /// Console output from this file
+    pub console_output: Option<String>,
+}
+
+/// Result for a single test case
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestResult {
+    /// Full test name including describe blocks
+    pub name: String,
+    /// Test status
+    pub status: TestStatus,
+    /// Execution time in milliseconds
+    pub duration_ms: u64,
+    /// Error details if failed
+    pub error: Option<TestError>,
+}
+
+/// Test execution status
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TestStatus {
+    Passed,
+    Failed,
+    Skipped,
+    Todo,
+}
+
+/// Error information for failed tests
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestError {
+    /// Error message
+    pub message: String,
+    /// Stack trace
+    pub stack: Option<String>,
+    /// Diff for assertion failures
+    pub diff: Option<String>,
+    /// Source location
+    pub location: Option<SourceLocation>,
+}
+
+/// Source code location
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceLocation {
+    pub file: String,
+    pub line: u32,
+    pub column: Option<u32>,
+}
+
+/// Snapshot operation summary
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotSummary {
+    pub added: u32,
+    pub updated: u32,
+    pub removed: u32,
+    pub matched: u32,
+    pub unmatched: u32,
+    pub unchecked: u32,
+}
+
+/// Daemon status information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatusResponse {
+    /// Daemon version
+    pub version: String,
+    /// Uptime in seconds
+    pub uptime_secs: u64,
+    /// Number of projects currently tracked
+    pub projects_count: u32,
+    /// Cache statistics
+    pub cache_stats: CacheStats,
+    /// Worker pool statistics
+    pub worker_stats: WorkerStats,
+}
+
+/// Cache statistics
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheStats {
+    /// Number of cached transforms
+    pub transform_count: u64,
+    /// Size of transform cache in bytes
+    pub transform_size_bytes: u64,
+    /// Number of cached dependency graphs
+    pub graph_count: u32,
+    /// Cache hit rate (0.0 - 1.0)
+    pub hit_rate: f64,
+}
+
+/// Worker pool statistics
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerStats {
+    /// Number of active workers
+    pub active: u32,
+    /// Number of idle workers
+    pub idle: u32,
+    /// Total tests executed since daemon start
+    pub total_tests_run: u64,
+}
+
+/// Error response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorResponse {
+    /// Error code
+    pub code: ErrorCode,
+    /// Human-readable message
+    pub message: String,
+    /// Additional details
+    pub details: Option<String>,
+}
+
+/// Error codes
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorCode {
+    /// Project configuration could not be loaded
+    ConfigError,
+    /// No test files found
+    NoTestsFound,
+    /// Transform/compilation failed
+    TransformError,
+    /// Worker crashed or timed out
+    WorkerError,
+    /// Internal daemon error
+    InternalError,
+    /// Invalid request
+    InvalidRequest,
+}
+
+/// Socket path for daemon communication
+pub fn socket_path() -> std::path::PathBuf {
+    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+        std::path::PathBuf::from(runtime_dir).join("rjest.sock")
+    } else {
+        let uid = unsafe { libc::getuid() };
+        std::path::PathBuf::from(format!("/tmp/rjest-{}.sock", uid))
+    }
+}
+
+/// IPC address for nng
+pub fn ipc_address() -> String {
+    format!("ipc://{}", socket_path().display())
+}

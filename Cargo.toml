@@ -1,0 +1,53 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/jestd",
+    "crates/rjest-cli",
+    "crates/rjest-protocol",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/user/rjest"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# IPC - using nng for low-latency messaging
+nng = "1"
+
+# Persistent caching
+sled = "0.34"
+
+# SWC for transforms
+swc_core = { version = "0.100", features = ["ecma_parser", "ecma_transforms", "ecma_codegen"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Hashing for cache keys
+blake3 = "1"
+
+# File watching
+notify = "6"
+
+# Globbing for test discovery
+glob = "0.3"
+
+# Internal crates
+rjest-protocol = { path = "crates/rjest-protocol" }
