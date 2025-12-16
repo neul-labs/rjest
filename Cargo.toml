@@ -4,6 +4,7 @@ members = [
     "crates/jestd",
     "crates/rjest-cli",
     "crates/rjest-protocol",
+    "crates/rjest-bench",
 ]
 
 [workspace.package]

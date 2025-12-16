@@ -1,8 +1,8 @@
-// Jest Snapshot v1, https://goo.gl/fbAQLP
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
 
 exports[`Snapshots > should match a simple object snapshot 1`] = `{
-  "name": "test",
-  "value": 42,
+  "name": "test-updated",
+  "value": 100,
   "nested": {
     "a": 1,
     "b": 2
@@ -29,3 +29,37 @@ exports[`Snapshots > should match multiple snapshots in same test 3`] = `{
   "third": 3
 }`;
 
+exports[`Snapshots should match a simple object snapshot 1`] = `
+{
+  "name": "test-updated",
+  "nested": {
+    "a": 1,
+    "b": 2,
+  },
+  "value": 100,
+}
+`;
+
+exports[`Snapshots should match a string snapshot 1`] = `"Hello, World!"`;
+
+exports[`Snapshots should match an array snapshot 1`] = `
+[
+  1,
+  2,
+  3,
+  "four",
+  {
+    "five": 5,
+  },
+]
+`;
+
+exports[`Snapshots should match multiple snapshots in same test 1`] = `"first"`;
+
+exports[`Snapshots should match multiple snapshots in same test 2`] = `"second"`;
+
+exports[`Snapshots should match multiple snapshots in same test 3`] = `
+{
+  "third": 3,
+}
+`;

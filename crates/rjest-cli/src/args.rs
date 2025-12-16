@@ -11,7 +11,7 @@ use rjest_protocol::{RunFlags, RunRequest};
 )]
 pub struct Args {
     /// Test file patterns to run
-    #[arg(trailing_var_arg = true)]
+    #[arg(num_args = 0..)]
     pub patterns: Vec<String>,
 
     /// Run all tests serially in the current process
@@ -85,6 +85,10 @@ pub struct Args {
     /// Restart the daemon
     #[arg(long = "daemon-restart")]
     pub daemon_restart: bool,
+
+    /// Health check - show detailed daemon health information
+    #[arg(long = "daemon-health")]
+    pub daemon_health: bool,
 }
 
 impl Args {

@@ -7,13 +7,14 @@ use rjest_protocol::{
     CacheStats as ProtoCacheStats, WorkerStats as ProtoWorkerStats, RunRequest,
     WatchStartRequest, WatchPollRequest, WatchStopRequest,
     WatchStartedResponse, WatchPollResponse, RunFlags,
+    HealthResponse, WorkerHealth as ProtoWorkerHealth,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, instrument, warn, span, Level};
 use uuid::Uuid;
 
 use crate::config::JestConfig;
@@ -168,6 +169,35 @@ fn handle_request(msg: &[u8], state: &Arc<DaemonState>) -> Response {
             Response::ShuttingDown
         }
 
+        Request::Health => {
+            debug!("Handling health check");
+            let health_start = Instant::now();
+
+            let configs = state.configs.lock().unwrap();
+            let watch_sessions = state.watch_sessions.lock().unwrap();
+
+            // Check for issues
+            let mut issues = Vec::new();
+            let uptime = state.start_time.elapsed().as_secs();
+
+            // Get memory usage (approximate via /proc/self/statm on Linux)
+            let memory_bytes = get_memory_usage().unwrap_or(0);
+
+            let latency_us = health_start.elapsed().as_micros() as u64;
+
+            Response::Health(HealthResponse {
+                healthy: issues.is_empty(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                uptime_secs: uptime,
+                latency_us,
+                memory_bytes,
+                workers: vec![], // Workers are created per-request currently
+                watch_sessions: watch_sessions.len() as u32,
+                cached_projects: configs.len() as u32,
+                issues,
+            })
+        }
+
         Request::Run(run_request) => {
             match execute_tests(&run_request, state) {
                 Ok(response) => Response::Run(response),
@@ -217,14 +247,25 @@ fn handle_request(msg: &[u8], state: &Arc<DaemonState>) -> Response {
     }
 }
 
+#[instrument(skip(state), fields(project = %request.project_root))]
 fn execute_tests(request: &RunRequest, state: &Arc<DaemonState>) -> Result<RunResponse> {
     let start_time = Instant::now();
     let project_root = PathBuf::from(&request.project_root);
+
+    // Record request in metrics
+    crate::metrics::record_request();
 
     info!("Executing tests for {}", project_root.display());
 
     // Load configuration
     let config = state.get_or_load_config(&project_root)?;
+
+    // Check for multi-project configuration
+    if let Some(ref projects) = config.projects {
+        if !projects.is_empty() {
+            return execute_multi_project_tests(request, state, &project_root, projects);
+        }
+    }
 
     // Discover test files
     let discovery = TestDiscovery::new(config.clone());
@@ -234,6 +275,16 @@ fn execute_tests(request: &RunRequest, state: &Arc<DaemonState>) -> Result<RunRe
             .map(PathBuf::from)
             .collect();
         discovery.find_related_tests(&related)?
+    } else if request.flags.only_changed {
+        // Get changed files from git and find related tests
+        let changed_files = crate::git::get_changed_files(&project_root)?;
+        if changed_files.is_empty() {
+            info!("No changed files detected");
+            vec![]
+        } else {
+            let all_tests = discovery.find_tests_matching(&request.patterns)?;
+            crate::git::find_related_test_files(&changed_files, &all_tests)
+        }
     } else {
         discovery.find_tests_matching(&request.patterns)?
     };
@@ -394,6 +445,10 @@ fn execute_tests(request: &RunRequest, state: &Arc<DaemonState>) -> Result<RunRe
         "Tests complete: {} passed, {} failed in {}ms",
         num_passed_tests, num_failed_tests, duration_ms
     );
+
+    // Record metrics
+    crate::metrics::record_test_results(num_passed_tests as u64, num_failed_tests as u64);
+    crate::metrics::record_test_file(duration_ms * 1000); // Convert to microseconds
 
     // Build snapshot summary if any snapshots were processed
     let snapshot_summary = if snap_added > 0 || snap_updated > 0 || snap_matched > 0 || snap_unmatched > 0 {
@@ -564,4 +619,366 @@ fn stop_watch_session(request: &WatchStopRequest, state: &Arc<DaemonState>) {
     } else {
         warn!("Watch session {} not found", request.session_id);
     }
+}
+
+/// Execute tests across multiple projects in a monorepo
+fn execute_multi_project_tests(
+    request: &RunRequest,
+    state: &Arc<DaemonState>,
+    root_dir: &Path,
+    projects: &[serde_json::Value],
+) -> Result<RunResponse> {
+    let start_time = Instant::now();
+
+    info!("Running tests across {} projects", projects.len());
+
+    // Aggregate results across all projects
+    let mut all_test_results = Vec::new();
+    let mut total_passed_suites = 0u32;
+    let mut total_failed_suites = 0u32;
+    let mut total_passed_tests = 0u32;
+    let mut total_failed_tests = 0u32;
+    let mut total_skipped_tests = 0u32;
+    let mut total_todo_tests = 0u32;
+    let mut total_snap_added = 0u32;
+    let mut total_snap_updated = 0u32;
+    let mut total_snap_matched = 0u32;
+    let mut total_snap_unmatched = 0u32;
+
+    for project in projects {
+        // Extract project path from the config value
+        let project_path = match project {
+            serde_json::Value::String(s) => {
+                // Project is a path string
+                let path = if s.starts_with('<') {
+                    // Handle <rootDir>/path patterns
+                    s.replace("<rootDir>", &root_dir.to_string_lossy())
+                } else if std::path::Path::new(s).is_absolute() {
+                    s.clone()
+                } else {
+                    root_dir.join(s).to_string_lossy().to_string()
+                };
+                PathBuf::from(path)
+            }
+            serde_json::Value::Object(obj) => {
+                // Project is an inline config - use rootDir if specified
+                if let Some(serde_json::Value::String(root)) = obj.get("rootDir") {
+                    if std::path::Path::new(root).is_absolute() {
+                        PathBuf::from(root)
+                    } else {
+                        root_dir.join(root)
+                    }
+                } else {
+                    // No rootDir specified, skip this project
+                    warn!("Project config missing rootDir, skipping");
+                    continue;
+                }
+            }
+            _ => {
+                warn!("Invalid project config type, skipping");
+                continue;
+            }
+        };
+
+        if !project_path.exists() {
+            warn!("Project path does not exist: {}", project_path.display());
+            continue;
+        }
+
+        info!("Running tests for project: {}", project_path.display());
+
+        // Create a request for this specific project
+        let project_request = RunRequest {
+            project_root: project_path.to_string_lossy().to_string(),
+            patterns: request.patterns.clone(),
+            flags: request.flags.clone(),
+        };
+
+        // Execute tests for this project
+        match execute_single_project_tests(&project_request, state) {
+            Ok(result) => {
+                total_passed_suites += result.num_passed_suites;
+                total_failed_suites += result.num_failed_suites;
+                total_passed_tests += result.num_passed_tests;
+                total_failed_tests += result.num_failed_tests;
+                total_skipped_tests += result.num_skipped_tests;
+                total_todo_tests += result.num_todo_tests;
+
+                if let Some(snap) = &result.snapshot_summary {
+                    total_snap_added += snap.added;
+                    total_snap_updated += snap.updated;
+                    total_snap_matched += snap.matched;
+                    total_snap_unmatched += snap.unmatched;
+                }
+
+                all_test_results.extend(result.test_results);
+            }
+            Err(e) => {
+                warn!("Failed to run tests for project {}: {}", project_path.display(), e);
+                total_failed_suites += 1;
+            }
+        }
+    }
+
+    let duration_ms = start_time.elapsed().as_millis() as u64;
+    let success = total_failed_tests == 0 && total_failed_suites == 0;
+
+    // Build snapshot summary if any snapshots were processed
+    let snapshot_summary = if total_snap_added > 0 || total_snap_updated > 0
+        || total_snap_matched > 0 || total_snap_unmatched > 0 {
+        Some(rjest_protocol::SnapshotSummary {
+            added: total_snap_added,
+            updated: total_snap_updated,
+            removed: 0,
+            matched: total_snap_matched,
+            unmatched: total_snap_unmatched,
+            unchecked: 0,
+        })
+    } else {
+        None
+    };
+
+    info!(
+        "Multi-project tests complete: {} passed, {} failed in {}ms",
+        total_passed_tests, total_failed_tests, duration_ms
+    );
+
+    Ok(RunResponse {
+        success,
+        num_passed_suites: total_passed_suites,
+        num_failed_suites: total_failed_suites,
+        num_passed_tests: total_passed_tests,
+        num_failed_tests: total_failed_tests,
+        num_skipped_tests: total_skipped_tests,
+        num_todo_tests: total_todo_tests,
+        duration_ms,
+        test_results: all_test_results,
+        snapshot_summary,
+    })
+}
+
+/// Execute tests for a single project (extracted from execute_tests)
+fn execute_single_project_tests(request: &RunRequest, state: &Arc<DaemonState>) -> Result<RunResponse> {
+    let start_time = Instant::now();
+    let project_root = PathBuf::from(&request.project_root);
+
+    // Load configuration for this project
+    let config = state.get_or_load_config(&project_root)?;
+
+    // Discover test files
+    let discovery = TestDiscovery::new(config.clone());
+    let test_files = if !request.flags.find_related_tests.is_empty() {
+        let related: Vec<PathBuf> = request.flags.find_related_tests
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        discovery.find_related_tests(&related)?
+    } else if request.flags.only_changed {
+        // Get changed files from git and find related tests
+        let changed_files = crate::git::get_changed_files(&project_root)?;
+        if changed_files.is_empty() {
+            info!("No changed files detected");
+            vec![]
+        } else {
+            let all_tests = discovery.find_tests_matching(&request.patterns)?;
+            crate::git::find_related_test_files(&changed_files, &all_tests)
+        }
+    } else {
+        discovery.find_tests_matching(&request.patterns)?
+    };
+
+    if test_files.is_empty() {
+        return Ok(RunResponse {
+            success: true,
+            num_passed_suites: 0,
+            num_failed_suites: 0,
+            num_passed_tests: 0,
+            num_failed_tests: 0,
+            num_skipped_tests: 0,
+            num_todo_tests: 0,
+            duration_ms: start_time.elapsed().as_millis() as u64,
+            test_results: vec![],
+            snapshot_summary: None,
+        });
+    }
+
+    // Create transformer
+    let transformer = Transformer::new(&state.cache_dir)?;
+
+    // Transform test files
+    let transforms: Vec<_> = test_files
+        .iter()
+        .filter_map(|path| {
+            match transformer.transform(path) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    warn!("Failed to transform {}: {}", path.display(), e);
+                    None
+                }
+            }
+        })
+        .collect();
+
+    // Find worker script
+    let worker_script = find_worker_script()?;
+
+    // Create worker pool
+    let worker_config = WorkerConfig {
+        root_dir: config.root_dir.clone(),
+        setup_files: config.setup_files.clone(),
+        setup_files_after_env: config.setup_files_after_env.clone(),
+        test_timeout: config.test_timeout,
+        clear_mocks: config.clear_mocks,
+        reset_mocks: config.reset_mocks,
+        restore_mocks: config.restore_mocks,
+        update_snapshots: request.flags.update_snapshots,
+    };
+
+    let max_workers = if request.flags.run_in_band {
+        1
+    } else {
+        request.flags.max_workers.map(|w| w as usize).unwrap_or_else(|| config.max_workers_count())
+    };
+
+    let mut pool = WorkerPool::new(max_workers, worker_script, worker_config)?;
+
+    // Run tests
+    let results = pool.run_tests(&transforms);
+
+    // Aggregate results
+    let mut test_results = Vec::new();
+    let mut num_passed_suites = 0u32;
+    let mut num_failed_suites = 0u32;
+    let mut num_passed_tests = 0u32;
+    let mut num_failed_tests = 0u32;
+    let mut num_skipped_tests = 0u32;
+    let mut num_todo_tests = 0u32;
+    let mut snap_added = 0u32;
+    let mut snap_updated = 0u32;
+    let mut snap_matched = 0u32;
+    let mut snap_unmatched = 0u32;
+
+    for result in results {
+        match result {
+            Ok(file_result) => {
+                if file_result.passed {
+                    num_passed_suites += 1;
+                } else {
+                    num_failed_suites += 1;
+                }
+
+                if let Some(snap) = &file_result.snapshot_summary {
+                    snap_added += snap.added;
+                    snap_updated += snap.updated;
+                    snap_matched += snap.matched;
+                    snap_unmatched += snap.unmatched;
+                }
+
+                let tests: Vec<ProtoTestResult> = file_result
+                    .tests
+                    .into_iter()
+                    .map(|t| {
+                        let status = match t.status.as_str() {
+                            "passed" => {
+                                num_passed_tests += 1;
+                                TestStatus::Passed
+                            }
+                            "failed" => {
+                                num_failed_tests += 1;
+                                TestStatus::Failed
+                            }
+                            "skipped" => {
+                                num_skipped_tests += 1;
+                                TestStatus::Skipped
+                            }
+                            "todo" => {
+                                num_todo_tests += 1;
+                                TestStatus::Todo
+                            }
+                            _ => TestStatus::Failed,
+                        };
+
+                        ProtoTestResult {
+                            name: t.name,
+                            status,
+                            duration_ms: t.duration_ms,
+                            error: t.error.map(|e| ProtoTestError {
+                                message: e.message,
+                                stack: e.stack,
+                                diff: e.diff,
+                                location: None,
+                            }),
+                        }
+                    })
+                    .collect();
+
+                test_results.push(ProtoTestFileResult {
+                    path: file_result.path,
+                    passed: file_result.passed,
+                    duration_ms: file_result.duration_ms,
+                    tests,
+                    console_output: None,
+                });
+            }
+            Err(e) => {
+                num_failed_suites += 1;
+                warn!("Test file failed: {}", e);
+            }
+        }
+    }
+
+    let total_tests = num_passed_tests + num_failed_tests + num_skipped_tests + num_todo_tests;
+    state.total_tests_run.fetch_add(total_tests as u64, Ordering::Relaxed);
+
+    let snapshot_summary = if snap_added > 0 || snap_updated > 0 || snap_matched > 0 || snap_unmatched > 0 {
+        Some(rjest_protocol::SnapshotSummary {
+            added: snap_added,
+            updated: snap_updated,
+            removed: 0,
+            matched: snap_matched,
+            unmatched: snap_unmatched,
+            unchecked: 0,
+        })
+    } else {
+        None
+    };
+
+    Ok(RunResponse {
+        success: num_failed_tests == 0 && num_failed_suites == 0,
+        num_passed_suites,
+        num_failed_suites,
+        num_passed_tests,
+        num_failed_tests,
+        num_skipped_tests,
+        num_todo_tests,
+        duration_ms: start_time.elapsed().as_millis() as u64,
+        test_results,
+        snapshot_summary,
+    })
+}
+
+/// Get approximate memory usage of the current process
+fn get_memory_usage() -> Option<u64> {
+    // On Linux, read from /proc/self/statm
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(content) = std::fs::read_to_string("/proc/self/statm") {
+            let parts: Vec<&str> = content.split_whitespace().collect();
+            if let Some(rss) = parts.get(1) {
+                if let Ok(pages) = rss.parse::<u64>() {
+                    // Page size is typically 4KB
+                    return Some(pages * 4096);
+                }
+            }
+        }
+    }
+
+    // On other platforms, return 0 for now
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+
+    #[cfg(target_os = "linux")]
+    None
 }

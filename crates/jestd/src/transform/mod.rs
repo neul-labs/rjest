@@ -49,20 +49,24 @@ impl TransformCache {
                 match serde_json::from_slice::<TransformResult>(&data) {
                     Ok(result) if result.source_hash == source_hash => {
                         debug!("Cache hit for {}", path.display());
+                        crate::metrics::record_cache_hit();
                         Some(result)
                     }
                     Ok(_) => {
                         debug!("Cache stale for {}", path.display());
+                        crate::metrics::record_cache_miss();
                         None
                     }
                     Err(e) => {
                         warn!("Cache corrupted for {}: {}", path.display(), e);
+                        crate::metrics::record_cache_miss();
                         None
                     }
                 }
             }
             Ok(None) => {
                 debug!("Cache miss for {}", path.display());
+                crate::metrics::record_cache_miss();
                 None
             }
             Err(e) => {

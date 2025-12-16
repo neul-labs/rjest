@@ -129,3 +129,75 @@ pub fn stop() -> Result<()> {
 
     Ok(())
 }
+
+/// Health check - detailed diagnostics
+pub fn health() -> Result<()> {
+    if !client::ping()? {
+        println!("Health: \x1b[31mUNHEALTHY\x1b[0m");
+        println!("Status: Daemon is not running");
+        std::process::exit(1);
+    }
+
+    let response = client::send_request(Request::Health)?;
+
+    match response {
+        Response::Health(health) => {
+            // Health status
+            if health.healthy {
+                println!("Health: \x1b[32mHEALTHY\x1b[0m");
+            } else {
+                println!("Health: \x1b[31mUNHEALTHY\x1b[0m");
+            }
+
+            println!();
+            println!("Version:         {}", health.version);
+            println!("Uptime:          {}s", health.uptime_secs);
+            println!("Response time:   {} us", health.latency_us);
+            println!("Memory:          {} KB", health.memory_bytes / 1024);
+            println!();
+            println!("Resources:");
+            println!("  Cached projects:  {}", health.cached_projects);
+            println!("  Watch sessions:   {}", health.watch_sessions);
+
+            if !health.workers.is_empty() {
+                println!();
+                println!("Workers:");
+                for worker in &health.workers {
+                    let status = if !worker.alive {
+                        "\x1b[31mDEAD\x1b[0m"
+                    } else if worker.busy {
+                        "\x1b[33mBUSY\x1b[0m"
+                    } else {
+                        "\x1b[32mIDLE\x1b[0m"
+                    };
+                    println!(
+                        "  Worker {}: {} - {} tests run, idle {}s",
+                        worker.id, status, worker.tests_run, worker.idle_secs
+                    );
+                }
+            }
+
+            if !health.issues.is_empty() {
+                println!();
+                println!("\x1b[31mIssues:\x1b[0m");
+                for issue in &health.issues {
+                    println!("  - {}", issue);
+                }
+            }
+
+            if !health.healthy {
+                std::process::exit(1);
+            }
+        }
+        Response::Error(err) => {
+            eprintln!("Error getting health: {}", err.message);
+            std::process::exit(1);
+        }
+        _ => {
+            eprintln!("Unexpected response");
+            std::process::exit(1);
+        }
+    }
+
+    Ok(())
+}

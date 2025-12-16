@@ -3,9 +3,13 @@ use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::time::Instant;
 use tracing::{debug, info, warn};
 
 use crate::transform::TransformResult;
+
+/// Maximum number of tests a worker can run before being recycled
+const MAX_TESTS_PER_WORKER: u64 = 1000;
 
 /// Request to run a test file
 #[derive(Debug, Serialize)]
@@ -69,10 +73,16 @@ pub struct TestError {
 struct Worker {
     process: Child,
     busy: bool,
+    /// Number of tests this worker has executed
+    tests_run: u64,
+    /// Time of last activity
+    last_activity: Instant,
+    /// Worker ID for tracking
+    id: u32,
 }
 
 impl Worker {
-    fn spawn(worker_script: &Path) -> Result<Self> {
+    fn spawn(worker_script: &Path, id: u32) -> Result<Self> {
         let process = Command::new("node")
             .arg(worker_script)
             .stdin(Stdio::piped())
@@ -84,7 +94,15 @@ impl Worker {
         Ok(Self {
             process,
             busy: false,
+            tests_run: 0,
+            last_activity: Instant::now(),
+            id,
         })
+    }
+
+    /// Check if this worker should be recycled
+    fn needs_recycle(&self) -> bool {
+        self.tests_run >= MAX_TESTS_PER_WORKER
     }
 
     fn is_alive(&mut self) -> bool {
@@ -97,6 +115,7 @@ impl Worker {
 
     fn run_test(&mut self, transform: &TransformResult, config: &WorkerConfig) -> Result<TestFileResult> {
         self.busy = true;
+        self.last_activity = Instant::now();
 
         let request = RunRequest {
             req_type: "run".to_string(),
@@ -118,6 +137,8 @@ impl Worker {
         reader.read_line(&mut line)?;
 
         self.busy = false;
+        self.tests_run += 1;
+        self.last_activity = Instant::now();
 
         // Parse response
         let response: serde_json::Value = serde_json::from_str(&line)?;
@@ -150,6 +171,8 @@ pub struct WorkerPool {
     worker_script: PathBuf,
     max_workers: usize,
     config: WorkerConfig,
+    /// Next worker ID to assign
+    next_worker_id: u32,
 }
 
 impl WorkerPool {
@@ -162,11 +185,14 @@ impl WorkerPool {
             worker_script,
             max_workers,
             config,
+            next_worker_id: 0,
         };
 
         // Pre-spawn workers
         for _ in 0..max_workers {
-            match Worker::spawn(&pool.worker_script) {
+            let id = pool.next_worker_id;
+            pool.next_worker_id += 1;
+            match Worker::spawn(&pool.worker_script, id) {
                 Ok(worker) => pool.workers.push(worker),
                 Err(e) => warn!("Failed to spawn worker: {}", e),
             }
@@ -201,19 +227,24 @@ impl WorkerPool {
 
     /// Get an available worker, spawning if necessary
     fn get_worker(&mut self) -> Result<&mut Worker> {
-        // First, try to find an idle worker
-        for (i, worker) in self.workers.iter_mut().enumerate() {
-            if !worker.busy && worker.is_alive() {
-                return Ok(&mut self.workers[i]);
-            }
-        }
+        // First, recycle any workers that have run too many tests
+        self.recycle_exhausted_workers();
 
         // Remove dead workers
         self.workers.retain_mut(|w| w.is_alive());
 
+        // Find an idle, alive worker
+        for i in 0..self.workers.len() {
+            if !self.workers[i].busy && self.workers[i].is_alive() {
+                return Ok(&mut self.workers[i]);
+            }
+        }
+
         // Spawn a new worker if under limit
         if self.workers.len() < self.max_workers {
-            let worker = Worker::spawn(&self.worker_script)?;
+            let id = self.next_worker_id;
+            self.next_worker_id += 1;
+            let worker = Worker::spawn(&self.worker_script, id)?;
             self.workers.push(worker);
             return Ok(self.workers.last_mut().unwrap());
         }
@@ -227,6 +258,36 @@ impl WorkerPool {
         }
     }
 
+    /// Recycle workers that have run too many tests
+    fn recycle_exhausted_workers(&mut self) {
+        let mut indices_to_recycle = Vec::new();
+
+        for (i, worker) in self.workers.iter().enumerate() {
+            if worker.needs_recycle() && !worker.busy {
+                indices_to_recycle.push(i);
+            }
+        }
+
+        // Recycle in reverse order to avoid index shifting
+        for i in indices_to_recycle.into_iter().rev() {
+            let old_id = self.workers[i].id;
+            debug!("Recycling worker {} after {} tests", old_id, self.workers[i].tests_run);
+            self.workers[i].kill();
+            self.workers.remove(i);
+
+            // Spawn replacement
+            let new_id = self.next_worker_id;
+            self.next_worker_id += 1;
+            match Worker::spawn(&self.worker_script, new_id) {
+                Ok(worker) => {
+                    debug!("Spawned replacement worker {}", new_id);
+                    self.workers.push(worker);
+                }
+                Err(e) => warn!("Failed to spawn replacement worker: {}", e),
+            }
+        }
+    }
+
     /// Get worker statistics
     pub fn stats(&self) -> WorkerStats {
         let active = self.workers.iter().filter(|w| w.busy).count() as u32;
@@ -237,6 +298,25 @@ impl WorkerPool {
             idle,
             max: self.max_workers as u32,
         }
+    }
+
+    /// Get detailed health information for all workers
+    pub fn health(&self) -> Vec<WorkerHealthInfo> {
+        self.workers
+            .iter()
+            .map(|w| WorkerHealthInfo {
+                id: w.id,
+                alive: true, // If it's in the list, it was alive last check
+                busy: w.busy,
+                tests_run: w.tests_run,
+                idle_secs: w.last_activity.elapsed().as_secs(),
+            })
+            .collect()
+    }
+
+    /// Get total tests run across all workers
+    pub fn total_tests_run(&self) -> u64 {
+        self.workers.iter().map(|w| w.tests_run).sum()
     }
 
     /// Shutdown all workers
@@ -260,6 +340,16 @@ pub struct WorkerStats {
     pub active: u32,
     pub idle: u32,
     pub max: u32,
+}
+
+/// Health information for a single worker
+#[derive(Debug, Clone)]
+pub struct WorkerHealthInfo {
+    pub id: u32,
+    pub alive: bool,
+    pub busy: bool,
+    pub tests_run: u64,
+    pub idle_secs: u64,
 }
 
 /// Find the worker script bundled with jestd

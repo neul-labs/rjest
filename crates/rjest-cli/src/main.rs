@@ -22,6 +22,9 @@ fn main() -> Result<()> {
         daemon::stop().ok();
         return run_tests(args);
     }
+    if args.daemon_health {
+        return daemon::health();
+    }
 
     // Handle fallback to upstream Jest
     if args.fallback_to_jest || std::env::var("RJEST_FALLBACK").is_ok() {

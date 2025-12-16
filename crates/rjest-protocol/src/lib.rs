@@ -16,6 +16,8 @@ pub enum Request {
     Ping,
     /// Get daemon status and cache statistics
     Status,
+    /// Health check with detailed diagnostics
+    Health,
     /// Shutdown the daemon
     Shutdown,
 }
@@ -36,6 +38,8 @@ pub enum Response {
     Pong,
     /// Daemon status information
     Status(StatusResponse),
+    /// Health check response
+    Health(HealthResponse),
     /// Acknowledgment of shutdown request
     ShuttingDown,
     /// Error occurred processing request
@@ -263,6 +267,44 @@ pub struct WorkerStats {
     pub idle: u32,
     /// Total tests executed since daemon start
     pub total_tests_run: u64,
+}
+
+/// Health check response with detailed diagnostics
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthResponse {
+    /// Whether the daemon is healthy
+    pub healthy: bool,
+    /// Daemon version
+    pub version: String,
+    /// Uptime in seconds
+    pub uptime_secs: u64,
+    /// Response latency in microseconds (time to process health check)
+    pub latency_us: u64,
+    /// Memory usage in bytes (approximate)
+    pub memory_bytes: u64,
+    /// Detailed worker health information
+    pub workers: Vec<WorkerHealth>,
+    /// Number of active watch sessions
+    pub watch_sessions: u32,
+    /// Number of cached projects
+    pub cached_projects: u32,
+    /// Issues detected (empty if healthy)
+    pub issues: Vec<String>,
+}
+
+/// Health information for a single worker
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerHealth {
+    /// Worker index
+    pub id: u32,
+    /// Whether the worker is alive
+    pub alive: bool,
+    /// Whether the worker is currently busy
+    pub busy: bool,
+    /// Number of tests run by this worker
+    pub tests_run: u64,
+    /// Time since last activity in seconds
+    pub idle_secs: u64,
 }
 
 /// Error response
