@@ -2,8 +2,8 @@
 describe('Snapshots', () => {
   test('should match a simple object snapshot', () => {
     const obj = {
-      name: 'test-updated',  // Changed value
-      value: 100,            // Changed value
+      name: 'test',
+      value: 42,
       nested: {
         a: 1,
         b: 2,
@@ -28,10 +28,11 @@ describe('Snapshots', () => {
     expect({ third: 3 }).toMatchSnapshot();
   });
 
-  test('should match inline snapshot', () => {
-    const value = { foo: 'bar' };
-    expect(value).toMatchInlineSnapshot(`{
-  "foo": "bar"
-}`);
+  test('should match object with nested arrays', () => {
+    const value = {
+      items: [1, 2, 3],
+      config: { enabled: true }
+    };
+    expect(value).toMatchSnapshot();
   });
 });

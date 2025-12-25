@@ -27,3 +27,15 @@ regex = "1"
 walkdir = "2"
 dirs = "5"
 uuid = { version = "1", features = ["v4"] }
+rayon = { workspace = true }
+lru = { workspace = true }
+lazy_static = "1.4"
+
+# SWC for native TypeScript/JSX transforms
+swc_common = { workspace = true }
+swc_ecma_ast = { workspace = true }
+swc_ecma_parser = { workspace = true }
+swc_ecma_codegen = { workspace = true }
+swc_ecma_transforms_base = { workspace = true }
+swc_ecma_transforms_typescript = { workspace = true }
+swc_ecma_visit = { workspace = true }

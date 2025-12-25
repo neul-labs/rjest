@@ -42,21 +42,21 @@
 
 | Flag | Phase | Status | Notes |
 |------|-------|--------|-------|
-| `<pattern>` | 1 | Planned | Regex patterns to filter test files |
-| `--runInBand`, `-i` | 1 | Planned | Run tests serially |
-| `--watch` | 1 | Planned | Re-run on file changes |
+| `<pattern>` | 1 | **Done** | File patterns to filter test files |
+| `--runInBand`, `-i` | 1 | **Done** | Run tests serially |
+| `--watch` | 1 | **Done** | Re-run on file changes |
 | `--watchAll` | 1 | Planned | Re-run all tests on changes |
-| `--bail`, `-b` | 1 | Planned | Exit after first failure |
-| `--maxWorkers`, `-w` | 1 | Planned | Number of worker processes |
-| `--json` | 1 | Planned | Output results as JSON |
+| `--bail`, `-b` | 1 | **Done** | Exit after first failure |
+| `--maxWorkers`, `-w` | 1 | **Done** | Number of worker processes |
+| `--json` | 1 | **Done** | Output results as JSON |
 | `--machine` | 1 | Planned | Structured output for AI agents |
-| `--config`, `-c` | 1 | Planned | Path to config file |
+| `--config`, `-c` | 1 | **Done** | Path to config file |
 | `--fallback-to-jest` | 1 | Planned | Force upstream Jest |
-| `--testNamePattern`, `-t` | 2 | Planned | Filter by test name |
+| `--testNamePattern`, `-t` | 2 | **Done** | Filter by test name regex |
 | `--onlyChanged`, `-o` | 3 | Planned | Run affected tests only |
 | `--findRelatedTests` | 3 | Planned | Run tests related to files |
 | `--coverage` | 4 | Planned | Collect coverage |
-| `-u`, `--updateSnapshot` | 4 | Planned | Update snapshots |
+| `-u`, `--updateSnapshot` | 4 | **Done** | Update snapshots |
 | `--env` | 4 | Planned | Test environment |
 | `--reporters` | 4 | Planned | Custom reporters |
 | `--notify` | 6 | Fallback | Desktop notifications |
@@ -66,16 +66,16 @@
 
 | Field | Phase | Status | Notes |
 |-------|-------|--------|-------|
-| `testMatch` | 1 | Planned | Glob patterns for test files |
-| `testRegex` | 1 | Planned | Regex for test files |
-| `roots` | 1 | Planned | Directories to search |
-| `transform` | 1 | Partial | SWC only; custom triggers fallback |
-| `setupFiles` | 2 | Planned | Pre-framework scripts |
-| `setupFilesAfterEnv` | 2 | Planned | Post-framework scripts |
-| `moduleNameMapper` | 2 | Planned | Path aliases |
+| `testMatch` | 1 | **Done** | Glob patterns for test files |
+| `testRegex` | 1 | **Done** | Regex for test files |
+| `roots` | 1 | **Done** | Directories to search |
+| `transform` | 1 | **Done** | SWC; custom triggers fallback |
+| `setupFiles` | 2 | **Done** | Pre-framework scripts |
+| `setupFilesAfterEnv` | 2 | **Done** | Post-framework scripts |
+| `moduleNameMapper` | 2 | **Done** | Path aliases |
 | `moduleDirectories` | 2 | Planned | Module search directories |
 | `projects` | 2 | Planned | Multi-project support |
-| `testEnvironment` | 4 | Partial | `node` first; `jsdom` Phase 4 |
+| `testEnvironment` | 4 | Partial | `node` only; `jsdom` planned |
 | `snapshotSerializers` | 4 | Planned | Custom serializers |
 | `coverageReporters` | 4 | Planned | Output formats |
 | `automock` | — | Fallback | Auto-mocking deferred |
@@ -85,16 +85,16 @@
 
 | API | Phase | Status | Notes |
 |-----|-------|--------|-------|
-| `test()` / `it()` | 1 | Planned | Define tests |
-| `describe()` | 1 | Planned | Test suites |
-| `beforeEach()` / `afterEach()` | 1 | Planned | Test hooks |
-| `beforeAll()` / `afterAll()` | 1 | Planned | Suite hooks |
-| `expect()` + core matchers | 1 | Planned | Assertions |
-| `jest.fn()` | 2 | Planned | Mock functions |
-| `jest.spyOn()` | 2 | Planned | Spy on methods |
-| `jest.mock()` | 2 | Planned | Manual mocking |
-| `jest.useFakeTimers()` | 2 | Planned | Fake timers |
-| `toMatchSnapshot()` | 4 | Planned | Snapshot testing |
+| `test()` / `it()` | 1 | **Done** | Define tests |
+| `describe()` | 1 | **Done** | Test suites |
+| `beforeEach()` / `afterEach()` | 1 | **Done** | Test hooks |
+| `beforeAll()` / `afterAll()` | 1 | **Done** | Suite hooks |
+| `expect()` + core matchers | 1 | **Done** | Assertions |
+| `jest.fn()` | 2 | **Done** | Mock functions |
+| `jest.spyOn()` | 2 | **Done** | Spy on methods |
+| `jest.mock()` | 2 | **Done** | Manual mocking |
+| `jest.useFakeTimers()` | 2 | **Done** | Fake timers |
+| `toMatchSnapshot()` | 4 | **Done** | Snapshot testing |
 | `test.each()` | 4 | Planned | Parameterized tests |
 | `test.concurrent()` | — | Fallback | Concurrent tests |
 | `jest.createMockFromModule()` | — | Fallback | Auto-generate mocks |

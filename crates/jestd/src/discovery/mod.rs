@@ -1,23 +1,106 @@
 use anyhow::Result;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 use tracing::{debug, info};
 use walkdir::WalkDir;
 
 use crate::config::JestConfig;
 
+/// How long to cache discovery results before re-scanning
+const DISCOVERY_CACHE_TTL: Duration = Duration::from_secs(5);
+
+/// Global discovery cache
+lazy_static::lazy_static! {
+    static ref DISCOVERY_CACHE: Arc<RwLock<DiscoveryCache>> = Arc::new(RwLock::new(DiscoveryCache::new()));
+}
+
+/// Cached discovery result
+struct CachedDiscovery {
+    test_files: Vec<PathBuf>,
+    timestamp: Instant,
+    config_hash: u64,
+}
+
+/// Cache for test file discovery
+struct DiscoveryCache {
+    entries: HashMap<PathBuf, CachedDiscovery>,
+}
+
+impl DiscoveryCache {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+        }
+    }
+
+    fn get(&self, root: &Path, config_hash: u64) -> Option<Vec<PathBuf>> {
+        if let Some(entry) = self.entries.get(root) {
+            if entry.config_hash == config_hash && entry.timestamp.elapsed() < DISCOVERY_CACHE_TTL {
+                debug!("Discovery cache hit for {}", root.display());
+                return Some(entry.test_files.clone());
+            }
+        }
+        None
+    }
+
+    fn set(&mut self, root: PathBuf, test_files: Vec<PathBuf>, config_hash: u64) {
+        self.entries.insert(root, CachedDiscovery {
+            test_files,
+            timestamp: Instant::now(),
+            config_hash,
+        });
+    }
+
+    fn invalidate(&mut self, root: &Path) {
+        self.entries.remove(root);
+    }
+}
+
+/// Invalidate discovery cache for a root directory
+pub fn invalidate_discovery_cache(root: &Path) {
+    if let Ok(mut cache) = DISCOVERY_CACHE.write() {
+        cache.invalidate(root);
+    }
+}
+
 /// Discover test files in a project based on Jest configuration
 pub struct TestDiscovery {
     config: JestConfig,
+    config_hash: u64,
 }
 
 impl TestDiscovery {
     pub fn new(config: JestConfig) -> Self {
-        Self { config }
+        // Compute a hash of the config for cache invalidation
+        let config_hash = compute_config_hash(&config);
+        Self { config, config_hash }
     }
 
     /// Find all test files matching the configuration
     pub fn find_tests(&self) -> Result<Vec<PathBuf>> {
+        // Check cache first
+        if let Ok(cache) = DISCOVERY_CACHE.read() {
+            if let Some(cached) = cache.get(&self.config.root_dir, self.config_hash) {
+                info!("Using cached discovery ({} files)", cached.len());
+                return Ok(cached);
+            }
+        }
+
+        // Perform actual discovery
+        let test_files = self.discover_tests()?;
+
+        // Cache the results
+        if let Ok(mut cache) = DISCOVERY_CACHE.write() {
+            cache.set(self.config.root_dir.clone(), test_files.clone(), self.config_hash);
+        }
+
+        Ok(test_files)
+    }
+
+    /// Actually discover test files (uncached)
+    fn discover_tests(&self) -> Result<Vec<PathBuf>> {
         let mut test_files = HashSet::new();
 
         for root in &self.config.roots {
@@ -134,6 +217,30 @@ impl TestDiscovery {
         info!("Found {} related test files", related.len());
         Ok(related)
     }
+}
+
+/// Compute a hash of the config for cache invalidation
+fn compute_config_hash(config: &JestConfig) -> u64 {
+    use std::hash::{Hash, Hasher};
+    use std::collections::hash_map::DefaultHasher;
+
+    let mut hasher = DefaultHasher::new();
+
+    // Hash key config fields that affect discovery
+    for root in &config.roots {
+        root.to_string_lossy().hash(&mut hasher);
+    }
+    for ext in &config.module_file_extensions {
+        ext.hash(&mut hasher);
+    }
+    for pattern in &config.test_match {
+        pattern.hash(&mut hasher);
+    }
+    for regex in &config.test_regex {
+        regex.hash(&mut hasher);
+    }
+
+    hasher.finish()
 }
 
 fn is_hidden(entry: &walkdir::DirEntry) -> bool {

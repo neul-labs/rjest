@@ -43,6 +43,10 @@ struct DaemonState {
     cache_dir: PathBuf,
     /// Active watch sessions
     watch_sessions: Mutex<HashMap<String, WatchSession>>,
+    /// Persistent worker pool (keyed by project root for multi-project support)
+    worker_pools: Mutex<HashMap<PathBuf, WorkerPool>>,
+    /// Worker script path (cached)
+    worker_script: Mutex<Option<PathBuf>>,
 }
 
 impl DaemonState {
@@ -58,6 +62,63 @@ impl DaemonState {
             configs: Mutex::new(HashMap::new()),
             cache_dir,
             watch_sessions: Mutex::new(HashMap::new()),
+            worker_pools: Mutex::new(HashMap::new()),
+            worker_script: Mutex::new(None),
+        }
+    }
+
+    /// Ensure the shared worker pool exists
+    fn ensure_pool(&self, max_workers: usize) -> Result<()> {
+        let mut pools = self.worker_pools.lock().unwrap();
+
+        // Use a single shared pool (keyed by empty path)
+        let key = PathBuf::new();
+        if !pools.contains_key(&key) {
+            // Get or cache worker script path
+            let worker_script = {
+                let mut script = self.worker_script.lock().unwrap();
+                if script.is_none() {
+                    *script = Some(find_worker_script()?);
+                }
+                script.clone().unwrap()
+            };
+
+            let pool = WorkerPool::new(max_workers, worker_script)?;
+            pools.insert(key, pool);
+        }
+
+        Ok(())
+    }
+
+    /// Pre-spawn workers on daemon start for fast first request
+    fn prewarm_workers(&self) {
+        info!("Pre-warming worker pool...");
+        if let Err(e) = self.ensure_pool(4) {
+            warn!("Failed to pre-warm workers: {}", e);
+        }
+    }
+
+    /// Cleanup idle workers to reduce memory usage
+    fn cleanup_idle_workers(&self) {
+        let mut pools = self.worker_pools.lock().unwrap();
+        for pool in pools.values_mut() {
+            pool.cleanup_idle_workers();
+        }
+    }
+
+    /// Run tests using the shared worker pool
+    fn run_tests_with_pool(
+        &self,
+        transforms: &[crate::transform::TransformResult],
+        config: &WorkerConfig,
+    ) -> Vec<Result<crate::worker::TestFileResult>> {
+        let mut pools = self.worker_pools.lock().unwrap();
+        let key = PathBuf::new();
+
+        if let Some(pool) = pools.get_mut(&key) {
+            pool.run_tests(transforms, config)
+        } else {
+            vec![Err(anyhow::anyhow!("No worker pool available"))]
         }
     }
 
@@ -90,6 +151,25 @@ pub async fn run() -> Result<()> {
     let addr = ipc_address();
     socket.listen(&addr).context("Failed to bind socket")?;
     info!("Listening on {}", addr);
+
+    // Pre-warm worker pool in background (non-blocking)
+    {
+        let state_clone = Arc::clone(&state);
+        std::thread::spawn(move || {
+            state_clone.prewarm_workers();
+        });
+    }
+
+    // Background thread to cleanup idle workers every 30 seconds
+    {
+        let state_clone = Arc::clone(&state);
+        std::thread::spawn(move || {
+            while state_clone.running.load(Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                state_clone.cleanup_idle_workers();
+            }
+        });
+    }
 
     // Handle requests
     while state.running.load(Ordering::Relaxed) {
@@ -250,7 +330,10 @@ fn handle_request(msg: &[u8], state: &Arc<DaemonState>) -> Response {
 #[instrument(skip(state), fields(project = %request.project_root))]
 fn execute_tests(request: &RunRequest, state: &Arc<DaemonState>) -> Result<RunResponse> {
     let start_time = Instant::now();
-    let project_root = PathBuf::from(&request.project_root);
+    // Canonicalize project root to ensure consistent cache key lookups
+    let project_root = PathBuf::from(&request.project_root)
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(&request.project_root));
 
     // Record request in metrics
     crate::metrics::record_request();
@@ -309,11 +392,13 @@ fn execute_tests(request: &RunRequest, state: &Arc<DaemonState>) -> Result<RunRe
     // Create transformer
     let transformer = Transformer::new(&state.cache_dir)?;
 
-    // Transform test files
-    let transforms: Vec<_> = test_files
-        .iter()
-        .filter_map(|path| {
-            match transformer.transform(path) {
+    // Transform test files in parallel
+    let transform_results = transformer.transform_many(&test_files);
+    let transforms: Vec<_> = transform_results
+        .into_iter()
+        .zip(test_files.iter())
+        .filter_map(|(result, path)| {
+            match result {
                 Ok(t) => Some(t),
                 Err(e) => {
                     warn!("Failed to transform {}: {}", path.display(), e);
@@ -323,10 +408,7 @@ fn execute_tests(request: &RunRequest, state: &Arc<DaemonState>) -> Result<RunRe
         })
         .collect();
 
-    // Find worker script
-    let worker_script = find_worker_script()?;
-
-    // Create worker pool
+    // Create worker config
     let worker_config = WorkerConfig {
         root_dir: config.root_dir.clone(),
         setup_files: config.setup_files.clone(),
@@ -336,18 +418,19 @@ fn execute_tests(request: &RunRequest, state: &Arc<DaemonState>) -> Result<RunRe
         reset_mocks: config.reset_mocks,
         restore_mocks: config.restore_mocks,
         update_snapshots: request.flags.update_snapshots,
+        test_name_pattern: request.flags.test_name_pattern.clone(),
     };
 
+    // Ensure worker pool exists (pre-warmed on daemon start)
     let max_workers = if request.flags.run_in_band {
         1
     } else {
         request.flags.max_workers.map(|w| w as usize).unwrap_or_else(|| config.max_workers_count())
     };
+    state.ensure_pool(max_workers)?;
 
-    let mut pool = WorkerPool::new(max_workers, worker_script, worker_config)?;
-
-    // Run tests
-    let results = pool.run_tests(&transforms);
+    // Run tests using shared pool
+    let results = state.run_tests_with_pool(&transforms, &worker_config);
 
     // Aggregate results
     let mut test_results = Vec::new();
@@ -760,7 +843,10 @@ fn execute_multi_project_tests(
 /// Execute tests for a single project (extracted from execute_tests)
 fn execute_single_project_tests(request: &RunRequest, state: &Arc<DaemonState>) -> Result<RunResponse> {
     let start_time = Instant::now();
-    let project_root = PathBuf::from(&request.project_root);
+    // Canonicalize project root to ensure consistent cache key lookups
+    let project_root = PathBuf::from(&request.project_root)
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(&request.project_root));
 
     // Load configuration for this project
     let config = state.get_or_load_config(&project_root)?;
@@ -805,11 +891,13 @@ fn execute_single_project_tests(request: &RunRequest, state: &Arc<DaemonState>) 
     // Create transformer
     let transformer = Transformer::new(&state.cache_dir)?;
 
-    // Transform test files
-    let transforms: Vec<_> = test_files
-        .iter()
-        .filter_map(|path| {
-            match transformer.transform(path) {
+    // Transform test files in parallel
+    let transform_results = transformer.transform_many(&test_files);
+    let transforms: Vec<_> = transform_results
+        .into_iter()
+        .zip(test_files.iter())
+        .filter_map(|(result, path)| {
+            match result {
                 Ok(t) => Some(t),
                 Err(e) => {
                     warn!("Failed to transform {}: {}", path.display(), e);
@@ -819,10 +907,7 @@ fn execute_single_project_tests(request: &RunRequest, state: &Arc<DaemonState>) 
         })
         .collect();
 
-    // Find worker script
-    let worker_script = find_worker_script()?;
-
-    // Create worker pool
+    // Create worker config
     let worker_config = WorkerConfig {
         root_dir: config.root_dir.clone(),
         setup_files: config.setup_files.clone(),
@@ -832,18 +917,19 @@ fn execute_single_project_tests(request: &RunRequest, state: &Arc<DaemonState>) 
         reset_mocks: config.reset_mocks,
         restore_mocks: config.restore_mocks,
         update_snapshots: request.flags.update_snapshots,
+        test_name_pattern: request.flags.test_name_pattern.clone(),
     };
 
+    // Ensure worker pool exists (pre-warmed on daemon start)
     let max_workers = if request.flags.run_in_band {
         1
     } else {
         request.flags.max_workers.map(|w| w as usize).unwrap_or_else(|| config.max_workers_count())
     };
+    state.ensure_pool(max_workers)?;
 
-    let mut pool = WorkerPool::new(max_workers, worker_script, worker_config)?;
-
-    // Run tests
-    let results = pool.run_tests(&transforms);
+    // Run tests using shared pool
+    let results = state.run_tests_with_pool(&transforms, &worker_config);
 
     // Aggregate results
     let mut test_results = Vec::new();

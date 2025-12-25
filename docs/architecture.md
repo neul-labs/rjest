@@ -35,12 +35,17 @@ All communication between CLI and daemon occurs over a local IPC channel impleme
 - On each request, only re-transforms files that changed since their last cached hash, drastically reducing incremental run time.
 - Maintains a separate cache namespace per project to respect differing configs (e.g., module aliases, JSX runtimes).
 
-### Worker orchestration
+#### Worker orchestration
 
-- Spawns worker pools per project namespace sized according to `--maxWorkers` or configuration defaults so different repos cannot starve one another.
-- Workers stay alive between runs; each receives compiled test bundles directly from the daemon rather than reading from disk.
-- Preloads a Jest-compatible runtime shim that defines globals (`test`, `it`, `describe`, `beforeEach`, `afterEach`, `expect`, fake timers, mock helpers).
-- Tracks worker health, restarts crashed workers, and cleans up leaked resources (timers, mocked modules) between test files.
+- Maintains a shared worker pool (up to 4 workers) that is pre-spawned when the daemon starts.
+- Workers are pre-warmed with a `warmup` request that initializes V8, loads core modules, and JIT-compiles common code paths before the first test run.
+- Workers stay alive between runs; each receives compiled test bundles directly from the daemon via JSON-over-stdin.
+- Preloads a Jest-compatible runtime shim (`worker.js`) that defines globals (`test`, `it`, `describe`, `beforeEach`, `afterEach`, `expect`, fake timers, mock helpers).
+- Tracks worker health and lifecycle:
+  - Automatically restarts crashed workers
+  - Recycles workers after 1000 tests to prevent memory bloat
+  - Kills idle workers after 60 seconds to free memory
+  - Background thread cleans up idle workers every 30 seconds
 
 ### Result handling
 

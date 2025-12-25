@@ -792,6 +792,26 @@ const jestGlobals = {
     const fullName = [...currentDescribe, name].join(' > ');
     const startTime = Date.now();
 
+    // Check if test matches the name pattern filter
+    if (currentConfig?.test_name_pattern) {
+      try {
+        const pattern = new RegExp(currentConfig.test_name_pattern);
+        if (!pattern.test(fullName)) {
+          // Test doesn't match pattern, skip it
+          testResults.push({
+            name: fullName,
+            status: 'skipped',
+            duration_ms: 0,
+            error: null,
+          });
+          return;
+        }
+      } catch (e) {
+        // Invalid regex pattern, run all tests
+        console.error('Invalid testNamePattern:', e.message);
+      }
+    }
+
     // Set current test name for snapshot tracking
     snapshotState.currentTestName = fullName;
 
@@ -1323,6 +1343,21 @@ async function main() {
       if (request.type === 'run') {
         const result = await runTestFile(request);
         console.log(JSON.stringify({ type: 'result', ...result }));
+      } else if (request.type === 'warmup') {
+        // Warmup by initializing Jest runtime with a minimal test
+        try {
+          // Load core modules to warm up V8
+          require('path');
+          require('fs');
+          require('vm');
+          // Initialize a minimal test context
+          global.expect = () => ({ toBe: () => {} });
+          global.test = () => {};
+          global.describe = () => {};
+          console.log(JSON.stringify({ type: 'warmed' }));
+        } catch (e) {
+          console.log(JSON.stringify({ type: 'warmed' }));
+        }
       } else if (request.type === 'ping') {
         console.log(JSON.stringify({ type: 'pong' }));
       } else if (request.type === 'exit') {

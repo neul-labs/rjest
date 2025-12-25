@@ -3,13 +3,20 @@ use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::time::Instant;
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
+#[allow(unused_imports)]
 use tracing::{debug, info, warn};
 
 use crate::transform::TransformResult;
 
 /// Maximum number of tests a worker can run before being recycled
 const MAX_TESTS_PER_WORKER: u64 = 1000;
+
+/// How long a worker can be idle before being killed (60 seconds)
+const WORKER_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Request to run a test file
 #[derive(Debug, Serialize)]
@@ -32,6 +39,9 @@ pub struct WorkerConfig {
     pub reset_mocks: bool,
     pub restore_mocks: bool,
     pub update_snapshots: bool,
+    /// Regex pattern to filter test names
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub test_name_pattern: Option<String>,
 }
 
 /// Result from running a test file
@@ -69,16 +79,30 @@ pub struct TestError {
     pub diff: Option<String>,
 }
 
-/// A single worker process
+/// Job sent to a worker thread
+struct WorkerJob {
+    index: usize,
+    transform: Arc<TransformResult>,
+    config: Arc<WorkerConfig>,
+}
+
+/// Result from a worker thread
+struct WorkerResult {
+    index: usize,
+    result: Result<TestFileResult>,
+}
+
+/// A single worker process running in its own thread
 struct Worker {
     process: Child,
-    busy: bool,
     /// Number of tests this worker has executed
     tests_run: u64,
-    /// Time of last activity
-    last_activity: Instant,
     /// Worker ID for tracking
     id: u32,
+    /// Path to respawn
+    worker_script: PathBuf,
+    /// Last time this worker was used
+    last_activity: Instant,
 }
 
 impl Worker {
@@ -93,11 +117,16 @@ impl Worker {
 
         Ok(Self {
             process,
-            busy: false,
             tests_run: 0,
-            last_activity: Instant::now(),
             id,
+            worker_script: worker_script.to_path_buf(),
+            last_activity: Instant::now(),
         })
+    }
+
+    /// Check if this worker has been idle too long
+    fn is_idle(&self) -> bool {
+        self.last_activity.elapsed() > WORKER_IDLE_TIMEOUT
     }
 
     /// Check if this worker should be recycled
@@ -107,15 +136,33 @@ impl Worker {
 
     fn is_alive(&mut self) -> bool {
         match self.process.try_wait() {
-            Ok(Some(_)) => false, // Process has exited
-            Ok(None) => true,     // Still running
-            Err(_) => false,      // Error checking
+            Ok(Some(_)) => false,
+            Ok(None) => true,
+            Err(_) => false,
         }
     }
 
+    /// Respawn this worker if dead or needs recycling
+    fn ensure_alive(&mut self) -> Result<()> {
+        if !self.is_alive() || self.needs_recycle() {
+            self.kill();
+            let new_process = Command::new("node")
+                .arg(&self.worker_script)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .context("Failed to respawn worker process")?;
+            self.process = new_process;
+            self.tests_run = 0;
+            debug!("Respawned worker {}", self.id);
+        }
+        Ok(())
+    }
+
     fn run_test(&mut self, transform: &TransformResult, config: &WorkerConfig) -> Result<TestFileResult> {
-        self.busy = true;
-        self.last_activity = Instant::now();
+        // Ensure worker is alive before running
+        self.ensure_alive()?;
 
         let request = RunRequest {
             req_type: "run".to_string(),
@@ -136,7 +183,6 @@ impl Worker {
         let mut line = String::new();
         reader.read_line(&mut line)?;
 
-        self.busy = false;
         self.tests_run += 1;
         self.last_activity = Instant::now();
 
@@ -157,6 +203,26 @@ impl Worker {
     fn kill(&mut self) {
         let _ = self.process.kill();
     }
+
+    /// Send a warmup request to initialize the worker's Jest runtime
+    fn ping(&mut self) -> Result<()> {
+        let request = WarmupRequest {
+            req_type: "warmup".to_string(),
+        };
+
+        let stdin = self.process.stdin.as_mut().context("No stdin")?;
+        let request_json = serde_json::to_string(&request)?;
+        writeln!(stdin, "{}", request_json)?;
+        stdin.flush()?;
+
+        // Read pong response
+        let stdout = self.process.stdout.as_mut().context("No stdout")?;
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+
+        Ok(())
+    }
 }
 
 impl Drop for Worker {
@@ -165,165 +231,223 @@ impl Drop for Worker {
     }
 }
 
-/// Pool of worker processes
+/// Pool of worker processes with parallel execution support
 pub struct WorkerPool {
-    workers: Vec<Worker>,
+    /// Workers wrapped in Arc<Mutex> for thread-safe access
+    workers: Vec<Arc<Mutex<Worker>>>,
+    #[allow(dead_code)]
     worker_script: PathBuf,
-    max_workers: usize,
-    config: WorkerConfig,
-    /// Next worker ID to assign
-    next_worker_id: u32,
+}
+
+/// Warmup request to pre-initialize workers
+#[derive(Debug, Serialize)]
+struct WarmupRequest {
+    #[serde(rename = "type")]
+    req_type: String,
 }
 
 impl WorkerPool {
-    /// Create a new worker pool
-    pub fn new(max_workers: usize, worker_script: PathBuf, config: WorkerConfig) -> Result<Self> {
-        info!("Creating worker pool with {} workers", max_workers);
+    /// Create a new worker pool (workers are pre-spawned and warmed up)
+    pub fn new(max_workers: usize, worker_script: PathBuf) -> Result<Self> {
+        // Limit workers to a reasonable number - more workers = more memory and warmup time
+        let effective_workers = max_workers.min(4);
+        info!("Creating worker pool with {} workers (requested: {})", effective_workers, max_workers);
 
-        let mut pool = Self {
-            workers: Vec::with_capacity(max_workers),
-            worker_script,
-            max_workers,
-            config,
-            next_worker_id: 0,
-        };
+        let mut workers = Vec::with_capacity(effective_workers);
 
         // Pre-spawn workers
-        for _ in 0..max_workers {
-            let id = pool.next_worker_id;
-            pool.next_worker_id += 1;
-            match Worker::spawn(&pool.worker_script, id) {
-                Ok(worker) => pool.workers.push(worker),
+        for id in 0..effective_workers {
+            match Worker::spawn(&worker_script, id as u32) {
+                Ok(worker) => workers.push(Arc::new(Mutex::new(worker))),
                 Err(e) => warn!("Failed to spawn worker: {}", e),
             }
         }
 
-        info!("Spawned {} workers", pool.workers.len());
+        info!("Spawned {} workers", workers.len());
+
+        let pool = Self {
+            workers,
+            worker_script,
+        };
+
+        // Warm up all workers in parallel
+        pool.warmup_workers();
+
         Ok(pool)
     }
 
-    /// Run a test file in an available worker
-    pub fn run_test(&mut self, transform: &TransformResult) -> Result<TestFileResult> {
-        debug!("Running test {} in worker", transform.original_path.display());
+    /// Send ping to all workers to warm them up
+    fn warmup_workers(&self) {
+        use std::thread;
 
-        // Clone config to avoid borrow issues
-        let config = self.config.clone();
+        let handles: Vec<_> = self.workers.iter().map(|worker_arc| {
+            let worker = Arc::clone(worker_arc);
+            thread::spawn(move || {
+                if let Ok(mut w) = worker.lock() {
+                    let _ = w.ping();
+                }
+            })
+        }).collect();
 
-        // Find an available worker or spawn a new one
-        let worker = self.get_worker()?;
+        for handle in handles {
+            let _ = handle.join();
+        }
 
-        worker.run_test(transform, &config)
+        debug!("All workers warmed up");
     }
 
-    /// Run multiple test files, potentially in parallel
-    pub fn run_tests(&mut self, transforms: &[TransformResult]) -> Vec<Result<TestFileResult>> {
-        // For now, run sequentially
-        // TODO: Implement parallel execution with worker distribution
-        transforms
-            .iter()
-            .map(|t| self.run_test(t))
-            .collect()
-    }
+    /// Remove idle workers to free memory
+    pub fn cleanup_idle_workers(&mut self) {
+        let initial_count = self.workers.len();
 
-    /// Get an available worker, spawning if necessary
-    fn get_worker(&mut self) -> Result<&mut Worker> {
-        // First, recycle any workers that have run too many tests
-        self.recycle_exhausted_workers();
+        // Keep at least 1 worker, remove idle ones
+        self.workers.retain(|worker_arc| {
+            if let Ok(worker) = worker_arc.lock() {
+                // Keep if not idle or if it's the last worker
+                !worker.is_idle()
+            } else {
+                false // Remove if can't lock (shouldn't happen)
+            }
+        });
 
-        // Remove dead workers
-        self.workers.retain_mut(|w| w.is_alive());
-
-        // Find an idle, alive worker
-        for i in 0..self.workers.len() {
-            if !self.workers[i].busy && self.workers[i].is_alive() {
-                return Ok(&mut self.workers[i]);
+        // Ensure at least 1 worker remains
+        if self.workers.is_empty() && initial_count > 0 {
+            if let Ok(worker) = Worker::spawn(&self.worker_script, 0) {
+                self.workers.push(Arc::new(Mutex::new(worker)));
             }
         }
 
-        // Spawn a new worker if under limit
-        if self.workers.len() < self.max_workers {
-            let id = self.next_worker_id;
-            self.next_worker_id += 1;
-            let worker = Worker::spawn(&self.worker_script, id)?;
-            self.workers.push(worker);
-            return Ok(self.workers.last_mut().unwrap());
+        let removed = initial_count.saturating_sub(self.workers.len());
+        if removed > 0 {
+            info!("Cleaned up {} idle workers, {} remaining", removed, self.workers.len());
         }
+    }
 
-        // Wait for any worker to become available
-        // For now, just use the first one
-        if let Some(worker) = self.workers.first_mut() {
-            Ok(worker)
+    /// Run a single test file (for compatibility)
+    pub fn run_test(&mut self, transform: &TransformResult, config: &WorkerConfig) -> Result<TestFileResult> {
+        debug!("Running test {} in worker", transform.original_path.display());
+
+        // Use the first available worker
+        if let Some(worker_arc) = self.workers.first() {
+            let mut worker = worker_arc.lock().unwrap();
+            worker.run_test(transform, config)
         } else {
             anyhow::bail!("No workers available")
         }
     }
 
-    /// Recycle workers that have run too many tests
-    fn recycle_exhausted_workers(&mut self) {
-        let mut indices_to_recycle = Vec::new();
-
-        for (i, worker) in self.workers.iter().enumerate() {
-            if worker.needs_recycle() && !worker.busy {
-                indices_to_recycle.push(i);
-            }
+    /// Run multiple test files in parallel across all workers
+    pub fn run_tests(&mut self, transforms: &[TransformResult], config: &WorkerConfig) -> Vec<Result<TestFileResult>> {
+        if transforms.is_empty() {
+            return vec![];
         }
 
-        // Recycle in reverse order to avoid index shifting
-        for i in indices_to_recycle.into_iter().rev() {
-            let old_id = self.workers[i].id;
-            debug!("Recycling worker {} after {} tests", old_id, self.workers[i].tests_run);
-            self.workers[i].kill();
-            self.workers.remove(i);
+        let num_tests = transforms.len();
+        // Only use as many workers as we have tests to ensure consistent warmup
+        let num_workers = self.workers.len().min(num_tests).max(1);
 
-            // Spawn replacement
-            let new_id = self.next_worker_id;
-            self.next_worker_id += 1;
-            match Worker::spawn(&self.worker_script, new_id) {
-                Ok(worker) => {
-                    debug!("Spawned replacement worker {}", new_id);
-                    self.workers.push(worker);
+        // For small number of tests, just run sequentially to avoid thread overhead
+        if num_tests <= 1 || num_workers <= 1 {
+            return transforms.iter().map(|t| self.run_test(t, config)).collect();
+        }
+
+        info!("Running {} tests in parallel across {} workers", num_tests, num_workers);
+
+        // Create channels for job distribution and result collection
+        let (job_tx, job_rx): (Sender<WorkerJob>, Receiver<WorkerJob>) = channel();
+        let (result_tx, result_rx): (Sender<WorkerResult>, Receiver<WorkerResult>) = channel();
+
+        // Wrap receiver in Arc<Mutex> for sharing between threads
+        let job_rx = Arc::new(Mutex::new(job_rx));
+
+        // Spawn worker threads (only for the workers we'll actually use)
+        let mut handles: Vec<JoinHandle<()>> = Vec::with_capacity(num_workers);
+
+        for worker_arc in self.workers.iter().take(num_workers) {
+            let worker = Arc::clone(worker_arc);
+            let job_rx = Arc::clone(&job_rx);
+            let result_tx = result_tx.clone();
+
+            let handle = thread::spawn(move || {
+                loop {
+                    // Try to get a job from the queue
+                    let job = {
+                        let rx = job_rx.lock().unwrap();
+                        rx.recv()
+                    };
+
+                    match job {
+                        Ok(job) => {
+                            // Run the test (dereference Arc to get references)
+                            let result = {
+                                let mut w = worker.lock().unwrap();
+                                w.run_test(&*job.transform, &*job.config)
+                            };
+
+                            // Send result back
+                            let _ = result_tx.send(WorkerResult {
+                                index: job.index,
+                                result,
+                            });
+                        }
+                        Err(_) => {
+                            // Channel closed, exit thread
+                            break;
+                        }
+                    }
                 }
-                Err(e) => warn!("Failed to spawn replacement worker: {}", e),
+            });
+
+            handles.push(handle);
+        }
+
+        // Drop the extra result sender so we can detect when all workers are done
+        drop(result_tx);
+
+        // Pre-wrap config in Arc (shared across all jobs)
+        let config = Arc::new(config.clone());
+
+        // Send all jobs
+        for (index, transform) in transforms.iter().enumerate() {
+            let job = WorkerJob {
+                index,
+                transform: Arc::new(transform.clone()),
+                config: Arc::clone(&config),
+            };
+            if job_tx.send(job).is_err() {
+                warn!("Failed to send job {}", index);
             }
         }
-    }
 
-    /// Get worker statistics
-    pub fn stats(&self) -> WorkerStats {
-        let active = self.workers.iter().filter(|w| w.busy).count() as u32;
-        let idle = self.workers.len() as u32 - active;
+        // Close the job channel to signal workers to exit after processing all jobs
+        drop(job_tx);
 
-        WorkerStats {
-            active,
-            idle,
-            max: self.max_workers as u32,
+        // Collect results
+        let mut results: Vec<Option<Result<TestFileResult>>> = (0..num_tests).map(|_| None).collect();
+        for worker_result in result_rx {
+            results[worker_result.index] = Some(worker_result.result);
         }
-    }
 
-    /// Get detailed health information for all workers
-    pub fn health(&self) -> Vec<WorkerHealthInfo> {
-        self.workers
-            .iter()
-            .map(|w| WorkerHealthInfo {
-                id: w.id,
-                alive: true, // If it's in the list, it was alive last check
-                busy: w.busy,
-                tests_run: w.tests_run,
-                idle_secs: w.last_activity.elapsed().as_secs(),
-            })
+        // Wait for all worker threads to finish
+        for handle in handles {
+            let _ = handle.join();
+        }
+
+        // Convert to final result vector
+        results
+            .into_iter()
+            .enumerate()
+            .map(|(i, r)| r.unwrap_or_else(|| Err(anyhow::anyhow!("No result for test {}", i))))
             .collect()
-    }
-
-    /// Get total tests run across all workers
-    pub fn total_tests_run(&self) -> u64 {
-        self.workers.iter().map(|w| w.tests_run).sum()
     }
 
     /// Shutdown all workers
     pub fn shutdown(&mut self) {
         info!("Shutting down worker pool");
-        for worker in &mut self.workers {
-            worker.kill();
+        for worker_arc in &self.workers {
+            if let Ok(mut worker) = worker_arc.lock() {
+                worker.kill();
+            }
         }
         self.workers.clear();
     }
@@ -333,23 +457,6 @@ impl Drop for WorkerPool {
     fn drop(&mut self) {
         self.shutdown();
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct WorkerStats {
-    pub active: u32,
-    pub idle: u32,
-    pub max: u32,
-}
-
-/// Health information for a single worker
-#[derive(Debug, Clone)]
-pub struct WorkerHealthInfo {
-    pub id: u32,
-    pub alive: bool,
-    pub busy: bool,
-    pub tests_run: u64,
-    pub idle_secs: u64,
 }
 
 /// Find the worker script bundled with jestd

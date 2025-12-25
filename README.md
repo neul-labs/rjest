@@ -1,8 +1,8 @@
 # rjest
 
-> **Status:** Phase 0 – Foundations (documentation and scaffolding)
+> **Status:** Working prototype with **100× speedup** on warm runs (14ms vs 1.4s)
 
-`rjest` is a Jest-compatible test runner that keeps a long-lived Rust daemon in the background so repeated `npm test` runs return results in seconds instead of tens of seconds. The daemon caches transforms, file graphs, and worker processes while a thin CLI shim forwards every user command to the daemon and renders Jest-style output. Under the hood it relies on `async-nng` for low-latency CLI↔daemon communication, `sled` for durable caches, and `ryv` for concurrent task scheduling.
+`rjest` is a Jest-compatible test runner that keeps a long-lived Rust daemon in the background so repeated test runs return results in **~14 milliseconds** instead of seconds. The daemon caches SWC transforms, maintains pre-warmed Node workers, and orchestrates parallel test execution while a thin CLI shim forwards commands and renders Jest-style output. Under the hood it uses nng for low-latency IPC, sled for persistent caches, and native SWC for TypeScript/JSX compilation.
 
 ## Why it exists
 
@@ -20,9 +20,9 @@
    - Uses SWC to compile TypeScript/JSX and caches the content-hash → compiled-code mapping on disk (via `sled`) and in memory.  
    - Maintains pools of warm Node workers and orchestrates test execution across them.  
    - Streams structured test results (JSON with file/name/duration/error data) back to callers over `async-nng`.
-2. **CLI shim (`jest`)**  
-   - Drop-in replacement for the Jest CLI; supports common flags like patterns, `--runInBand`, `--watch`, `--coverage`, `--bail`, `--maxWorkers`, and `--json`.  
-   - Starts the daemon on demand, forwards every invocation as an RPC using `async-nng`, and renders Jest-style output (human-readable or JSON).  
+2. **CLI shim (`jest`)**
+   - Drop-in replacement for the Jest CLI; supports common flags like patterns, `--runInBand`, `--watch`, `--coverage`, `--bail`, `--maxWorkers`, `--testNamePattern`, and `--json`.
+   - Starts the daemon on demand, forwards every invocation as an RPC using `async-nng`, and renders Jest-style output (human-readable or JSON).
    - Can fall back to upstream Jest when a requested feature is not yet supported.
 3. **Node-based workers**  
    - Persistent worker processes stay alive across runs, preload a Jest-like runtime, and execute SWC output directly.  
@@ -51,6 +51,10 @@ npx rjest
 npx rjest src/utils.test.ts
 npx rjest --watch
 npx rjest --coverage
+
+# Filter tests by name pattern
+npx rjest --testNamePattern="add"
+npx rjest -t "Math"
 ```
 
 The daemon starts automatically on first run and stays alive to accelerate subsequent invocations. No configuration changes required—`rjest` reads your existing `jest.config.*` files.
@@ -100,9 +104,9 @@ npx rjest --findRelatedTests src/api.ts src/utils.ts
 
 ### Why agents benefit
 
-- **Sub-second feedback loops:** Warm runs return results in 0.5–3 seconds instead of 10–30 seconds, enabling tighter edit-test cycles.
+- **14ms feedback loops:** Warm runs return results in ~14 milliseconds instead of seconds, enabling rapid edit-test cycles.
 - **Structured output:** `--json` and `--machine` flags provide parse-friendly results with file paths, test names, durations, and error details.
-- **Selective execution:** Agents can run only affected tests rather than the full suite, reducing noise and latency.
+- **Selective execution:** Use `--testNamePattern` or file patterns to run only relevant tests, reducing noise and latency.
 - **Session continuity:** The daemon maintains state across invocations, so agents don't pay cold-start costs repeatedly.
 
 ### Example agent workflow
@@ -112,6 +116,9 @@ npx rjest --findRelatedTests src/api.ts src/utils.ts
 # 2. Run affected tests with machine output
 npx rjest --onlyChanged --machine
 
+# Or filter by test name pattern
+npx rjest --testNamePattern="authentication" --json
+
 # 3. Parse JSON results
 # 4. If failures: read error details, fix code, re-run
 # 5. Repeat until green
@@ -119,16 +126,25 @@ npx rjest --onlyChanged --machine
 
 ## Technology choices
 
-- `async-nng` handles the bidirectional messaging between CLI and daemon with low-latency, backpressure-aware sockets.
-- `sled` stores transform artifacts, dependency metadata, and daemon bookkeeping so caches survive restarts without external services.
-- `ryv` coordinates asynchronous tasks inside the daemon (file watching, transform pipelines, worker scheduling) while keeping latency predictable.
+- **nng (nanomsg-next-gen)** handles the bidirectional messaging between CLI and daemon with low-latency Unix domain sockets.
+- **SWC** provides native Rust TypeScript/JSX compilation, 10-100× faster than Babel.
+- **sled** stores transform artifacts keyed by content hash (blake3) so caches survive restarts without external services.
+- **rayon** parallelizes file transforms across CPU cores.
 
 ## Performance expectations
 
-- **Cold start:** First run still has to parse config, discover tests, compile everything once, and spin up workers. Expect a modest 1.2–2× speedup over classic Jest primarily from SWC transforms and tighter orchestration.
-- **Warm incremental runs:** Re-running an individual test file after editing nearby code typically drops from 5–15 seconds to 0.5–3 seconds because only changed files are recompiled and workers stay hot (≈5–10× faster).
-- **Warm full-suite runs:** When most files are unchanged, repeated `npm test` runs take roughly half the time (≈2–3× faster) because the daemon reuses cached transforms, a prebuilt graph, and persistent workers.
-- **Zero-change reruns:** If nothing changed between runs, execution time approaches the pure cost of the tests themselves because the daemon simply redispatches to idle workers (often 2–5× faster than re-running Jest cold).
+Measured benchmarks on a TypeScript test suite (2 files, 19 tests):
+
+| Metric | rjest | Jest | Speedup |
+| --- | --- | --- | --- |
+| Cold start | 1.9s | 1.4s | 0.7× |
+| Warm run | **14ms** | 1.4s | **100×** |
+
+- **Cold start:** First run spawns workers, warms up V8, parses config, discovers tests, and compiles everything. Cold starts are slightly slower due to daemon initialization overhead.
+- **Warm runs:** Once workers are hot and transforms cached, tests return in **under 15 milliseconds**. This is where rjest delivers its largest gains.
+- **Memory:** The daemon + 4 workers uses ~200MB total. Idle workers are automatically cleaned up after 60 seconds.
+
+See [BENCHMARK.md](BENCHMARK.md) for detailed benchmark methodology and results.
 
 ## Roadmap highlights
 

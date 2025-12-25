@@ -23,11 +23,17 @@ nng = "1"
 # Persistent caching
 sled = "0.34"
 
-# SWC for transforms
-swc_core = { version = "0.100", features = ["ecma_parser", "ecma_transforms", "ecma_codegen"] }
+# SWC for TypeScript/JSX transforms (compatible versions)
+swc_common = "18.0"
+swc_ecma_ast = "19.0"
+swc_ecma_parser = "30.0"
+swc_ecma_codegen = "21.0"
+swc_ecma_transforms_base = "33.0"
+swc_ecma_transforms_typescript = "36.0"
+swc_ecma_visit = "19.0"
 
-# Serialization
-serde = { version = "1", features = ["derive"] }
+# Serialization (pinned for SWC compatibility)
+serde = { version = "1.0.225", features = ["derive"] }
 serde_json = "1"
 
 # CLI
@@ -49,6 +55,12 @@ notify = "6"
 
 # Globbing for test discovery
 glob = "0.3"
+
+# Parallel processing
+rayon = "1.10"
+
+# In-memory caching
+lru = "0.12"
 
 # Internal crates
 rjest-protocol = { path = "crates/rjest-protocol" }
