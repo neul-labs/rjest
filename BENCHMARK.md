@@ -4,19 +4,19 @@ Benchmarks comparing rjest against upstream Jest on a TypeScript test suite.
 
 ## Test Suite
 
-- **Files**: 2 test files (`utils.test.ts`, `snapshot.test.ts`)
-- **Tests**: 19 individual tests
-- **Features**: TypeScript, snapshot testing
+- **Files**: 3 test files (`utils.test.ts`, `snapshot.test.ts`, `fuzzy.test.ts`)
+- **Tests**: 136 individual tests
+- **Features**: TypeScript, snapshot testing, mocks, async tests
 - **Location**: `tests/fixtures/basic-ts`
 
 ## Results Summary
 
 | Metric | rjest | Jest | Improvement |
 |--------|-------|------|-------------|
-| Cold start | 1,900ms | 1,400ms | 0.7× (slower) |
-| Warm run | 14ms | 1,400ms | **100× faster** |
-| Daemon memory | 35MB | — | — |
-| Total memory (daemon + workers) | 200MB | 100MB | +100% |
+| Cold start | 9,200ms | 14,200ms | 1.5× faster |
+| Warm run | 150ms | 14,200ms | **95× faster** |
+| Daemon memory | 17MB | — | — |
+| Total memory (daemon + workers) | 212MB | 108MB | +96% |
 
 ## Detailed Results
 
@@ -25,55 +25,59 @@ Benchmarks comparing rjest against upstream Jest on a TypeScript test suite.
 ```
 Cold Start (daemon startup + first test run)
 ------------------------------------------------
-  Run 1: 1930ms
-  Run 2: 1890ms
-  Run 3: 1920ms
-  Average: 1913ms
+  Run 1: 9220ms
+  Run 2: 9530ms
+  Run 3: 8597ms
+  Run 4: 9167ms
+  Run 5: 9409ms
+  Average: 9185ms
 
 Warm Run (daemon + workers already hot)
 ------------------------------------------------
-  Run 1: 14ms
-  Run 2: 14ms
-  Run 3: 14ms
-  Run 4: 14ms
-  Run 5: 14ms
-  Average: 14ms
+  Run 1: 101ms
+  Run 2: 96ms
+  Run 3: 124ms
+  Run 4: 82ms
+  Run 5: 95ms
+  Average: 100ms (can vary 80-200ms)
 
 Upstream Jest
 ------------------------------------------------
-  Run 1: 1430ms
-  Run 2: 1400ms
-  Run 3: 1380ms
-  Average: 1403ms
+  Run 1: 13698ms
+  Run 2: 14041ms
+  Run 3: 13554ms
+  Run 4: 14402ms
+  Run 5: 15117ms
+  Average: 14162ms
 ```
 
 ### Memory
 
 ```
 rjest:
-  Daemon RSS:        ~35 MB
-  Total (+ workers): ~200 MB
+  Daemon RSS:        ~17 MB
+  Total (+ workers): ~212 MB
 
 Jest:
-  Peak RSS:          ~100 MB
+  Peak RSS:          ~108 MB
 ```
 
 ## Key Takeaways
 
 ### Speed
 
-- **100× faster** on warm runs (14ms vs 1,400ms)
-- Cold starts are ~0.5s slower due to daemon initialization overhead
-- Warm runs complete in **under 15 milliseconds**
+- **95× faster** on warm runs (~150ms vs ~14,200ms)
+- Cold starts are now faster than Jest (9.2s vs 14.2s)
+- Warm runs complete in **under 200 milliseconds** for 136 tests
 
 ### Memory Trade-off
 
-rjest uses more memory (~200MB) than a single Jest run (~100MB) because:
-- The daemon process stays resident (~35MB)
-- 4 Node worker processes are kept warm (~40MB each)
+rjest uses more memory (~212MB) than a single Jest run (~108MB) because:
+- The daemon process stays resident (~17MB)
+- 4 Node worker processes are kept warm (~50MB each)
 - Transform caches are held in memory
 
-This trade-off enables the 100× speedup on subsequent runs.
+This trade-off enables the 95× speedup on subsequent runs.
 
 ### Memory Management
 
@@ -112,6 +116,7 @@ time jest  # measure
 
 ## Environment
 
-- **Platform**: Linux 6.17.7-x64v3-xanmod1
-- **Date**: 2025-12-24
+- **Platform**: Linux 6.14.0-37-generic
+- **Date**: 2026-01-03
 - **Build**: Release (optimized)
+- **Tests**: 136 (3 test files)

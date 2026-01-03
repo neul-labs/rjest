@@ -16,6 +16,8 @@ use swc_ecma_parser::{parse_file_as_module, EsSyntax, Syntax, TsSyntax};
 use swc_ecma_transforms_base::fixer::fixer;
 use swc_ecma_transforms_base::hygiene::hygiene;
 use swc_ecma_transforms_base::resolver;
+use swc_ecma_transforms_module::common_js::{self, FeatureFlag};
+use swc_ecma_transforms_module::path::Resolver;
 use swc_ecma_transforms_typescript::strip;
 use swc_ecma_visit::visit_mut_pass;
 use tracing::{debug, info, warn};
@@ -270,6 +272,19 @@ fn transform_typescript(path: &Path, source: &str, extension: &str) -> Result<St
     if matches!(extension, "ts" | "tsx" | "mts" | "cts") {
         strip(unresolved_mark, top_level_mark).process(&mut program);
     }
+
+    // Convert ES modules to CommonJS
+    let cjs_config = common_js::Config {
+        strict_mode: false,
+        ..Default::default()
+    };
+    common_js::common_js(
+        Resolver::Default,
+        unresolved_mark,
+        cjs_config,
+        FeatureFlag::default(),
+    )
+    .process(&mut program);
 
     // Apply hygiene and fixer
     visit_mut_pass(hygiene()).process(&mut program);

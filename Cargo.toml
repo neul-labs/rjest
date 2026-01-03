@@ -30,6 +30,7 @@ swc_ecma_parser = "30.0"
 swc_ecma_codegen = "21.0"
 swc_ecma_transforms_base = "33.0"
 swc_ecma_transforms_typescript = "36.0"
+swc_ecma_transforms_module = "36.0"
 swc_ecma_visit = "19.0"
 
 # Serialization (pinned for SWC compatibility)

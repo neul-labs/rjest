@@ -1,0 +1,72 @@
+site_name: rjest Documentation
+site_description: A blazing-fast Jest-compatible test runner written in Rust
+site_url: https://rjest.dev
+repo_url: https://github.com/user/rjest
+repo_name: rjest
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.details
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Installation: getting-started/installation.md
+    - Quick Start: getting-started/quick-start.md
+    - Migration from Jest: getting-started/migration.md
+  - Guides:
+    - Writing Tests: guides/writing-tests.md
+    - Matchers: guides/matchers.md
+    - Mock Functions: guides/mocks.md
+    - Async Testing: guides/async.md
+    - Snapshot Testing: guides/snapshots.md
+  - Reference:
+    - CLI: reference/cli.md
+    - Configuration: reference/configuration.md
+    - Jest Globals: reference/globals.md
+  - Advanced:
+    - Architecture: advanced/architecture.md
+    - Performance: advanced/performance.md
+    - Troubleshooting: advanced/troubleshooting.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/user/rjest

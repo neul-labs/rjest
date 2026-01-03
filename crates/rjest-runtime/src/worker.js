@@ -508,6 +508,28 @@ function createSimpleExpect() {
           throw new Error(`Expected value to be instance of ${constructor.name}`);
         }
       },
+      toBeNaN() {
+        if (!Number.isNaN(actual)) {
+          throw new Error(`Expected NaN but got ${JSON.stringify(actual)}`);
+        }
+      },
+      toBeCloseTo(expected, precision = 2) {
+        const pow = Math.pow(10, precision + 1);
+        const delta = Math.abs(expected - actual);
+        const maxDelta = Math.pow(10, -precision) / 2;
+        if (delta >= maxDelta) {
+          throw new Error(`Expected ${actual} to be close to ${expected} (precision: ${precision})`);
+        }
+      },
+      toContainEqual(expected) {
+        if (!Array.isArray(actual)) {
+          throw new Error('toContainEqual expects an array');
+        }
+        const found = actual.some(item => JSON.stringify(item) === JSON.stringify(expected));
+        if (!found) {
+          throw new Error(`Expected array to contain equal to ${JSON.stringify(expected)}`);
+        }
+      },
       toHaveBeenCalled() {
         if (!actual.mock || actual.mock.calls.length === 0) {
           throw new Error('Expected mock function to have been called');
@@ -612,6 +634,19 @@ function createSimpleExpect() {
         toHaveBeenCalled() {
           if (actual.mock && actual.mock.calls.length > 0) {
             throw new Error('Expected mock function not to have been called');
+          }
+        },
+        toBeNaN() {
+          if (Number.isNaN(actual)) {
+            throw new Error('Expected not NaN');
+          }
+        },
+        toContainEqual(expected) {
+          if (Array.isArray(actual)) {
+            const found = actual.some(item => JSON.stringify(item) === JSON.stringify(expected));
+            if (found) {
+              throw new Error(`Expected array not to contain equal to ${JSON.stringify(expected)}`);
+            }
           }
         },
       },
@@ -908,7 +943,14 @@ const jestGlobals = {
         mockFn.mock.instances.push(this);
         const result = { type: 'return', value: undefined };
         try {
-          if (mockFn._impl) {
+          if (mockFn._implOnce.length > 0) {
+            // Use one-time implementation first
+            const onceImpl = mockFn._implOnce.shift();
+            result.value = onceImpl.apply(this, args);
+          } else if (mockFn._returnValues.length > 0) {
+            // Use one-time return value
+            result.value = mockFn._returnValues.shift();
+          } else if (mockFn._impl) {
             result.value = mockFn._impl.apply(this, args);
           } else {
             result.value = mockFn._returnValue;
@@ -924,6 +966,7 @@ const jestGlobals = {
       };
       mockFn.mock = { calls: [], instances: [], results: [] };
       mockFn._impl = impl;
+      mockFn._implOnce = [];
       mockFn._returnValue = undefined;
       mockFn._returnValues = [];
       mockFn.mockReturnValue = (val) => {
@@ -934,16 +977,28 @@ const jestGlobals = {
         mockFn._returnValues.push(val);
         return mockFn;
       };
+      mockFn.mockResolvedValue = (val) => {
+        mockFn._impl = () => Promise.resolve(val);
+        return mockFn;
+      };
+      mockFn.mockResolvedValueOnce = (val) => {
+        mockFn._implOnce.push(() => Promise.resolve(val));
+        return mockFn;
+      };
+      mockFn.mockRejectedValue = (val) => {
+        mockFn._impl = () => Promise.reject(val);
+        return mockFn;
+      };
+      mockFn.mockRejectedValueOnce = (val) => {
+        mockFn._implOnce.push(() => Promise.reject(val));
+        return mockFn;
+      };
       mockFn.mockImplementation = (fn) => {
         mockFn._impl = fn;
         return mockFn;
       };
       mockFn.mockImplementationOnce = (fn) => {
-        const originalImpl = mockFn._impl;
-        mockFn._impl = (...args) => {
-          mockFn._impl = originalImpl;
-          return fn(...args);
-        };
+        mockFn._implOnce.push(fn);
         return mockFn;
       };
       mockFn.mockClear = () => {
@@ -954,7 +1009,9 @@ const jestGlobals = {
       mockFn.mockReset = () => {
         mockFn.mockClear();
         mockFn._impl = undefined;
+        mockFn._implOnce = [];
         mockFn._returnValue = undefined;
+        mockFn._returnValues = [];
       };
       mockFn.mockRestore = () => {
         mockFn.mockReset();
