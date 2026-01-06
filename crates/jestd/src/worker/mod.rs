@@ -11,9 +11,22 @@ use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
 use crate::transform::TransformResult;
+use rjest_protocol::WorkerHealth;
 
 /// Maximum number of tests a worker can run before being recycled
 const MAX_TESTS_PER_WORKER: u64 = 1000;
+
+/// Default maximum number of workers in the pool
+const DEFAULT_MAX_WORKERS: usize = 4;
+
+/// Get the configured maximum number of workers from environment variable
+/// or return the default value
+fn get_max_workers_from_env() -> usize {
+    std::env::var("RJEST_MAX_WORKERS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_MAX_WORKERS)
+}
 
 /// How long a worker can be idle before being killed (60 seconds)
 const WORKER_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -107,13 +120,27 @@ struct Worker {
 
 impl Worker {
     fn spawn(worker_script: &Path, id: u32) -> Result<Self> {
+        // Check if Node.js is available
+        let node_path = Command::new("node")
+            .arg("--version")
+            .output()
+            .context("Failed to execute Node.js. Is Node.js installed and in PATH?")?;
+
+        if !node_path.status.success() {
+            anyhow::bail!(
+                "Node.js is installed but returned non-zero exit code: {}",
+                node_path.status
+            );
+        }
+
         let process = Command::new("node")
             .arg(worker_script)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .context("Failed to spawn worker process")?;
+            .context(format!("Failed to spawn worker process (node version: {})",
+                String::from_utf8_lossy(&node_path.stdout).trim()))?;
 
         Ok(Self {
             process,
@@ -200,8 +227,45 @@ impl Worker {
         Ok(result)
     }
 
+    /// Gracefully terminate the worker process
+    /// First tries SIGTERM, then SIGKILL if it doesn't respond
     fn kill(&mut self) {
-        let _ = self.process.kill();
+        // Try graceful shutdown with SIGTERM first
+        let pid = self.process.id();
+
+        // Send SIGTERM
+        unsafe {
+            libc::kill(pid as libc::pid_t, libc::SIGTERM);
+        }
+
+        // Wait up to 2 seconds for graceful shutdown
+        let timeout = std::time::Duration::from_secs(2);
+        let start = std::time::Instant::now();
+
+        loop {
+            match self.process.try_wait() {
+                Ok(Some(_)) => {
+                    // Process exited gracefully
+                    return;
+                }
+                Ok(None) => {
+                    // Process still running
+                    if start.elapsed() > timeout {
+                        // Timeout - force kill with SIGKILL
+                        unsafe {
+                            libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                        }
+                        let _ = self.process.wait();
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                Err(_) => {
+                    // Error waiting - process is gone
+                    return;
+                }
+            }
+        }
     }
 
     /// Send a warmup request to initialize the worker's Jest runtime
@@ -235,7 +299,8 @@ impl Drop for Worker {
 pub struct WorkerPool {
     /// Workers wrapped in Arc<Mutex> for thread-safe access
     workers: Vec<Arc<Mutex<Worker>>>,
-    #[allow(dead_code)]
+    /// Maximum number of workers allowed (for defensive bounds checking)
+    max_workers: usize,
     worker_script: PathBuf,
 }
 
@@ -249,9 +314,14 @@ struct WarmupRequest {
 impl WorkerPool {
     /// Create a new worker pool (workers are pre-spawned and warmed up)
     pub fn new(max_workers: usize, worker_script: PathBuf) -> Result<Self> {
+        // Get the configured max from environment (RJEST_MAX_WORKERS)
+        let env_max = get_max_workers_from_env();
+
         // Limit workers to a reasonable number - more workers = more memory and warmup time
-        let effective_workers = max_workers.min(4);
-        info!("Creating worker pool with {} workers (requested: {})", effective_workers, max_workers);
+        // The limit is the minimum of: requested workers, environment config, and a reasonable hard cap
+        let hard_cap = 16; // Prevent runaway memory usage
+        let effective_workers = max_workers.min(env_max).min(hard_cap);
+        info!("Creating worker pool with {} workers (requested: {}, env limit: {})", effective_workers, max_workers, env_max);
 
         let mut workers = Vec::with_capacity(effective_workers);
 
@@ -267,6 +337,7 @@ impl WorkerPool {
 
         let pool = Self {
             workers,
+            max_workers: effective_workers,
             worker_script,
         };
 
@@ -290,7 +361,9 @@ impl WorkerPool {
         }).collect();
 
         for handle in handles {
-            let _ = handle.join();
+            if let Err(e) = handle.join() {
+                warn!("Worker warmup thread panicked: {:?}", e);
+            }
         }
 
         debug!("All workers warmed up");
@@ -310,8 +383,8 @@ impl WorkerPool {
             }
         });
 
-        // Ensure at least 1 worker remains
-        if self.workers.is_empty() && initial_count > 0 {
+        // Ensure at least 1 worker remains (but don't exceed max_workers)
+        if self.workers.is_empty() && initial_count > 0 && self.workers.len() < self.max_workers {
             if let Ok(worker) = Worker::spawn(&self.worker_script, 0) {
                 self.workers.push(Arc::new(Mutex::new(worker)));
             }
@@ -319,8 +392,18 @@ impl WorkerPool {
 
         let removed = initial_count.saturating_sub(self.workers.len());
         if removed > 0 {
-            info!("Cleaned up {} idle workers, {} remaining", removed, self.workers.len());
+            info!("Cleaned up {} idle workers, {} remaining (max: {})", removed, self.workers.len(), self.max_workers);
         }
+    }
+
+    /// Get current number of workers
+    pub fn worker_count(&self) -> usize {
+        self.workers.len()
+    }
+
+    /// Get maximum number of workers allowed
+    pub fn max_workers(&self) -> usize {
+        self.max_workers
     }
 
     /// Run a single test file (for compatibility)
@@ -329,7 +412,7 @@ impl WorkerPool {
 
         // Use the first available worker
         if let Some(worker_arc) = self.workers.first() {
-            let mut worker = worker_arc.lock().unwrap();
+            let mut worker = worker_arc.lock().map_err(|e| anyhow::anyhow!("Worker lock poisoned: {}", e))?;
             worker.run_test(transform, config)
         } else {
             anyhow::bail!("No workers available")
@@ -372,16 +455,25 @@ impl WorkerPool {
                 loop {
                     // Try to get a job from the queue
                     let job = {
-                        let rx = job_rx.lock().unwrap();
+                        let rx = match job_rx.lock() {
+                            Ok(rx) => rx,
+                            Err(e) => {
+                                let _ = result_tx.send(WorkerResult {
+                                    index: 0,
+                                    result: Err(anyhow::anyhow!("Job receiver lock poisoned: {}", e)),
+                                });
+                                break;
+                            }
+                        };
                         rx.recv()
                     };
 
                     match job {
                         Ok(job) => {
                             // Run the test (dereference Arc to get references)
-                            let result = {
-                                let mut w = worker.lock().unwrap();
-                                w.run_test(&*job.transform, &*job.config)
+                            let result = match worker.lock() {
+                                Ok(mut w) => w.run_test(&*job.transform, &*job.config),
+                                Err(e) => Err(anyhow::anyhow!("Worker lock poisoned: {}", e)),
                             };
 
                             // Send result back
@@ -429,8 +521,21 @@ impl WorkerPool {
         }
 
         // Wait for all worker threads to finish
+        let mut worker_panicked = false;
         for handle in handles {
-            let _ = handle.join();
+            if let Err(e) = handle.join() {
+                warn!("Worker thread panicked: {:?}", e);
+                worker_panicked = true;
+            }
+        }
+
+        // If any worker panicked, add error to any missing results
+        if worker_panicked {
+            for result in &mut results {
+                if result.is_none() {
+                    *result = Some(Err(anyhow::anyhow!("Worker thread panicked")));
+                }
+            }
         }
 
         // Convert to final result vector
@@ -450,6 +555,22 @@ impl WorkerPool {
             }
         }
         self.workers.clear();
+    }
+
+    /// Get health status of all workers
+    pub fn health(&self) -> Vec<WorkerHealth> {
+        self.workers.iter().filter_map(|worker_arc| {
+            match worker_arc.lock() {
+                Ok(mut worker) => Some(WorkerHealth {
+                    id: worker.id,
+                    alive: worker.is_alive(),
+                    busy: false, // We don't track busy state currently
+                    tests_run: worker.tests_run,
+                    idle_secs: worker.last_activity.elapsed().as_secs(),
+                }),
+                Err(_) => None,
+            }
+        }).collect()
     }
 }
 
@@ -486,4 +607,113 @@ pub fn find_worker_script() -> Result<PathBuf> {
     }
 
     anyhow::bail!("Could not find worker script")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_worker_config_default_values() {
+        let config = WorkerConfig {
+            root_dir: PathBuf::from("/test"),
+            setup_files: vec![],
+            setup_files_after_env: vec![],
+            test_timeout: 5000,
+            clear_mocks: false,
+            reset_mocks: false,
+            restore_mocks: false,
+            update_snapshots: false,
+            test_name_pattern: None,
+        };
+
+        assert_eq!(config.test_timeout, 5000);
+        assert!(!config.clear_mocks);
+        assert!(!config.update_snapshots);
+    }
+
+    #[test]
+    fn test_test_result_creation() {
+        let result = TestResult {
+            name: "test example".to_string(),
+            status: "passed".to_string(),
+            duration_ms: 100,
+            error: None,
+        };
+
+        assert_eq!(result.name, "test example");
+        assert_eq!(result.status, "passed");
+        assert_eq!(result.duration_ms, 100);
+        assert!(result.error.is_none());
+    }
+
+    #[test]
+    fn test_test_file_result_creation() {
+        let result = TestFileResult {
+            path: "test/example.test.ts".to_string(),
+            passed: true,
+            duration_ms: 500,
+            tests: vec![],
+            snapshot_summary: None,
+        };
+
+        assert!(result.passed);
+        assert_eq!(result.duration_ms, 500);
+        assert!(result.tests.is_empty());
+        assert!(result.snapshot_summary.is_none());
+    }
+
+    #[test]
+    fn test_snapshot_summary_default() {
+        let summary = SnapshotSummary::default();
+        assert_eq!(summary.added, 0);
+        assert_eq!(summary.updated, 0);
+        assert_eq!(summary.matched, 0);
+        assert_eq!(summary.unmatched, 0);
+    }
+
+    #[test]
+    fn test_snapshot_summary_with_values() {
+        let summary = SnapshotSummary {
+            added: 2,
+            updated: 1,
+            matched: 5,
+            unmatched: 1,
+        };
+
+        assert_eq!(summary.added, 2);
+        assert_eq!(summary.updated, 1);
+        assert_eq!(summary.matched, 5);
+        assert_eq!(summary.unmatched, 1);
+    }
+
+    #[test]
+    fn test_test_error_creation() {
+        let error = TestError {
+            message: "Expected 1 to equal 2".to_string(),
+            stack: Some("at test (test/example.test.ts:10:5)".to_string()),
+            diff: Some("  - Expected\n  + Received\n\n  1\n  2".to_string()),
+        };
+
+        assert!(error.message.contains("Expected"));
+        assert!(error.stack.is_some());
+        assert!(error.diff.is_some());
+    }
+
+    #[test]
+    fn test_worker_config_with_test_pattern() {
+        let config = WorkerConfig {
+            root_dir: PathBuf::from("/test"),
+            setup_files: vec![],
+            setup_files_after_env: vec![],
+            test_timeout: 5000,
+            clear_mocks: false,
+            reset_mocks: false,
+            restore_mocks: false,
+            update_snapshots: false,
+            test_name_pattern: Some("skip.*".to_string()),
+        };
+
+        assert_eq!(config.test_name_pattern, Some("skip.*".to_string()));
+    }
 }

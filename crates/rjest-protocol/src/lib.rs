@@ -1,5 +1,19 @@
 use serde::{Deserialize, Serialize};
 
+/// Get the socket path for daemon communication
+///
+/// Uses UID only (not PID) so both CLI and daemon use the same path.
+/// The daemon cleans up any stale socket on startup.
+pub fn socket_path() -> std::path::PathBuf {
+    let uid = unsafe { libc::getuid() };
+
+    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+        std::path::PathBuf::from(runtime_dir).join(format!("rjest-{}.sock", uid))
+    } else {
+        std::path::PathBuf::from(format!("/tmp/rjest-{}.sock", uid))
+    }
+}
+
 /// Request sent from CLI to daemon
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -334,16 +348,6 @@ pub enum ErrorCode {
     InternalError,
     /// Invalid request
     InvalidRequest,
-}
-
-/// Socket path for daemon communication
-pub fn socket_path() -> std::path::PathBuf {
-    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-        std::path::PathBuf::from(runtime_dir).join("rjest.sock")
-    } else {
-        let uid = unsafe { libc::getuid() };
-        std::path::PathBuf::from(format!("/tmp/rjest-{}.sock", uid))
-    }
 }
 
 /// IPC address for nng

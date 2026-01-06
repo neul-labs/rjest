@@ -1,9 +1,19 @@
 use anyhow::{Context, Result};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tracing::{debug, info};
+
+/// Cached compiled patterns for JestConfig
+#[derive(Debug, Clone)]
+pub struct JestConfigPatterns {
+    pub test_regex_compiled: Vec<Regex>,
+    pub test_path_ignore_compiled: Vec<Regex>,
+    pub coverage_path_ignore_compiled: Vec<Regex>,
+    pub transform_ignore_compiled: Vec<Regex>,
+}
 
 /// Normalized Jest configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +66,9 @@ pub struct JestConfig {
     pub reset_mocks: bool,
     #[serde(default)]
     pub restore_mocks: bool,
+    /// Cached compiled patterns (computed lazily)
+    #[serde(skip)]
+    pub patterns: Option<JestConfigPatterns>,
 }
 
 fn default_timeout() -> u32 {
@@ -63,6 +76,47 @@ fn default_timeout() -> u32 {
 }
 
 impl JestConfig {
+    /// Compile and cache regex patterns for efficient matching
+    pub fn compile_patterns(&mut self) {
+        if self.patterns.is_some() {
+            return; // Already compiled
+        }
+
+        let test_regex_compiled: Vec<Regex> = self.test_regex
+            .iter()
+            .filter_map(|p| Regex::new(p).ok())
+            .collect();
+
+        let test_path_ignore_compiled: Vec<Regex> = self.test_path_ignore_patterns
+            .iter()
+            .filter_map(|p| Regex::new(p).ok())
+            .collect();
+
+        let coverage_path_ignore_compiled: Vec<Regex> = self.coverage_path_ignore_patterns
+            .iter()
+            .filter_map(|p| Regex::new(p).ok())
+            .collect();
+
+        let transform_ignore_compiled: Vec<Regex> = self.transform_ignore_patterns
+            .iter()
+            .filter_map(|p| Regex::new(p).ok())
+            .collect();
+
+        self.patterns = Some(JestConfigPatterns {
+            test_regex_compiled,
+            test_path_ignore_compiled,
+            coverage_path_ignore_compiled,
+            transform_ignore_compiled,
+        });
+    }
+
+    /// Get compiled patterns, compiling if necessary
+    fn get_patterns(&mut self) -> &JestConfigPatterns {
+        if self.patterns.is_none() {
+            self.compile_patterns();
+        }
+        self.patterns.as_ref().unwrap()
+    }
     /// Load Jest configuration for a project by invoking Node
     pub fn load(project_root: &Path) -> Result<Self> {
         info!("Loading Jest config for {}", project_root.display());
@@ -70,7 +124,7 @@ impl JestConfig {
         // Find the config loader script
         let loader_script = find_config_loader()?;
 
-        // Run the Node script
+        // Run the Node script (blocking)
         let output = Command::new("node")
             .arg(&loader_script)
             .arg(project_root)
@@ -93,8 +147,54 @@ impl JestConfig {
             }
         }
 
-        let config: JestConfig =
+        let mut config: JestConfig =
             serde_json::from_str(&stdout).context("Failed to parse config JSON")?;
+
+        // Compile regex patterns upfront for efficient matching
+        config.compile_patterns();
+
+        info!("Loaded config with {} roots", config.roots.len());
+        Ok(config)
+    }
+
+    /// Async version of load using tokio::process
+    pub async fn load_async(project_root: &Path) -> Result<Self> {
+        use tokio::process::Command;
+
+        info!("Loading Jest config asynchronously for {}", project_root.display());
+
+        // Find the config loader script
+        let loader_script = find_config_loader()?;
+
+        // Run the Node script asynchronously
+        let output = Command::new("node")
+            .arg(&loader_script)
+            .arg(project_root)
+            .current_dir(project_root)
+            .output()
+            .await
+            .context("Failed to execute config loader")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Config loader failed: {}", stderr);
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        debug!("Config loader output: {}", stdout);
+
+        // Check for error response
+        if let Ok(error) = serde_json::from_str::<ConfigError>(&stdout) {
+            if error.error {
+                anyhow::bail!("Failed to load config: {}", error.message);
+            }
+        }
+
+        let mut config: JestConfig =
+            serde_json::from_str(&stdout).context("Failed to parse config JSON")?;
+
+        // Compile regex patterns upfront for efficient matching
+        config.compile_patterns();
 
         info!("Loaded config with {} roots", config.roots.len());
         Ok(config)
@@ -121,26 +221,30 @@ impl JestConfig {
     pub fn is_test_file(&self, path: &Path) -> bool {
         let path_str = path.to_string_lossy();
 
+        // Get cached patterns (always Some after load())
+        let patterns = match &self.patterns {
+            Some(p) => p,
+            None => return false, // Should not happen after load()
+        };
+
         // Check ignore patterns first
-        for pattern in &self.test_path_ignore_patterns {
-            if path_str.contains(pattern.trim_start_matches('/').trim_end_matches('/')) {
+        for re in &patterns.test_path_ignore_compiled {
+            if re.is_match(&path_str) {
                 return false;
             }
         }
 
-        // Check testMatch patterns
+        // Check testMatch patterns using shared glob_match
         for pattern in &self.test_match {
-            if glob_match(pattern, &path_str) {
+            if crate::rjest_util::glob_match(pattern, &path_str) {
                 return true;
             }
         }
 
-        // Check testRegex patterns
-        for pattern in &self.test_regex {
-            if let Ok(re) = regex::Regex::new(pattern) {
-                if re.is_match(&path_str) {
-                    return true;
-                }
+        // Check testRegex patterns using cached compiled regex
+        for re in &patterns.test_regex_compiled {
+            if re.is_match(&path_str) {
+                return true;
             }
         }
 
@@ -191,134 +295,24 @@ fn num_cpus() -> usize {
         .unwrap_or(4)
 }
 
-/// Glob matching for Jest test patterns
-fn glob_match(pattern: &str, path: &str) -> bool {
-    // Convert Jest/minimatch glob pattern to regex
-    // Handle common patterns:
-    // - ** = any path segments
-    // - * = any chars except /
-    // - ? = single char (or optional group in extended glob)
-    // - [abc] = char class
-    // - ?(x) = zero or one of x
-    // - +(x) = one or more of x
-    // - *(x) = zero or more of x
-    // - @(x|y) = one of x or y
-
-    let mut regex_pattern = String::new();
-    let chars: Vec<char> = pattern.chars().collect();
-    let mut i = 0;
-
-    while i < chars.len() {
-        match chars[i] {
-            '*' if i + 1 < chars.len() && chars[i + 1] == '*' => {
-                // ** = any path (including /)
-                regex_pattern.push_str(".*");
-                i += 2;
-                // Skip trailing /
-                if i < chars.len() && chars[i] == '/' {
-                    i += 1;
-                }
-            }
-            '*' => {
-                // * = any chars except /
-                regex_pattern.push_str("[^/]*");
-                i += 1;
-            }
-            '?' if i + 1 < chars.len() && chars[i + 1] == '(' => {
-                // ?(x) = zero or one of x
-                let (group, end) = extract_group(&chars, i + 1);
-                regex_pattern.push_str(&format!("({})?", group));
-                i = end + 1;
-            }
-            '+' if i + 1 < chars.len() && chars[i + 1] == '(' => {
-                // +(x) = one or more of x
-                let (group, end) = extract_group(&chars, i + 1);
-                regex_pattern.push_str(&format!("({})+", group));
-                i = end + 1;
-            }
-            '@' if i + 1 < chars.len() && chars[i + 1] == '(' => {
-                // @(x|y) = one of
-                let (group, end) = extract_group(&chars, i + 1);
-                regex_pattern.push_str(&format!("({})", group));
-                i = end + 1;
-            }
-            '.' => {
-                regex_pattern.push_str("\\.");
-                i += 1;
-            }
-            '[' => {
-                // Character class - pass through
-                let start = i;
-                i += 1;
-                while i < chars.len() && chars[i] != ']' {
-                    i += 1;
-                }
-                let class: String = chars[start..=i.min(chars.len() - 1)].iter().collect();
-                regex_pattern.push_str(&class);
-                i += 1;
-            }
-            '(' | ')' | '{' | '}' | '^' | '$' | '|' | '\\' => {
-                regex_pattern.push('\\');
-                regex_pattern.push(chars[i]);
-                i += 1;
-            }
-            c => {
-                regex_pattern.push(c);
-                i += 1;
-            }
-        }
-    }
-
-    match regex::Regex::new(&format!("{}$", regex_pattern)) {
-        Ok(re) => re.is_match(path),
-        Err(_) => {
-            // Fallback: simple substring match
-            path.contains(".test.") || path.contains(".spec.") || path.contains("__tests__")
-        }
-    }
-}
-
-fn extract_group(chars: &[char], start: usize) -> (String, usize) {
-    // start points to '('
-    let mut depth = 0;
-    let mut end = start;
-    for (i, &c) in chars[start..].iter().enumerate() {
-        match c {
-            '(' => depth += 1,
-            ')' => {
-                depth -= 1;
-                if depth == 0 {
-                    end = start + i;
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-    let inner: String = chars[start + 1..end].iter().collect();
-    // Convert | to regex alternation
-    let converted = inner.replace('.', "\\.").replace('|', "|");
-    (converted, end)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_glob_match() {
-        // Simple patterns
-        assert!(glob_match("**/*.test.ts", "src/utils.test.ts"));
-        assert!(glob_match("**/*.test.ts", "src/foo/bar.test.ts"));
-        assert!(glob_match("**/__tests__/**/*.ts", "src/__tests__/foo.ts"));
-        assert!(!glob_match("**/*.test.ts", "src/utils.ts"));
+        // Simple patterns using shared rjest_util::glob_match
+        assert!(crate::rjest_util::glob_match("**/*.test.ts", "src/utils.test.ts"));
+        assert!(crate::rjest_util::glob_match("**/*.test.ts", "src/foo/bar.test.ts"));
+        assert!(crate::rjest_util::glob_match("**/__tests__/**/*.ts", "src/__tests__/foo.ts"));
+        assert!(!crate::rjest_util::glob_match("**/*.test.ts", "src/utils.ts"));
 
         // Jest default patterns
         let jest_pattern = "**/?(*.)+(spec|test).[jt]s?(x)";
-        assert!(glob_match(jest_pattern, "src/utils.test.js"));
-        assert!(glob_match(jest_pattern, "src/utils.test.ts"));
-        assert!(glob_match(jest_pattern, "src/utils.spec.js"));
-        assert!(glob_match(jest_pattern, "src/utils.test.tsx"));
-        assert!(glob_match(jest_pattern, "foo.test.js"));
+        assert!(crate::rjest_util::glob_match(jest_pattern, "src/utils.test.js"));
+        assert!(crate::rjest_util::glob_match(jest_pattern, "src/utils.test.ts"));
+        assert!(crate::rjest_util::glob_match(jest_pattern, "src/utils.spec.js"));
+        assert!(crate::rjest_util::glob_match(jest_pattern, "src/utils.test.tsx"));
+        assert!(crate::rjest_util::glob_match(jest_pattern, "foo.test.js"));
     }
 }

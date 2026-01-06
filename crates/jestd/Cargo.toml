@@ -30,6 +30,8 @@ uuid = { version = "1", features = ["v4"] }
 rayon = { workspace = true }
 lru = { workspace = true }
 lazy_static = "1.4"
+libc = "0.2"
+tempfile = "3"
 
 # SWC for native TypeScript/JSX transforms
 swc_common = { workspace = true }

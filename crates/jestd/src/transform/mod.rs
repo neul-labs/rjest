@@ -6,6 +6,7 @@ use sled::Db;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use tracing::{info, warn};
 use swc_common::comments::SingleThreadedComments;
 use swc_common::sync::Lrc;
 use swc_common::{FileName, Globals, Mark, SourceMap, GLOBALS};
@@ -20,7 +21,6 @@ use swc_ecma_transforms_module::common_js::{self, FeatureFlag};
 use swc_ecma_transforms_module::path::Resolver;
 use swc_ecma_transforms_typescript::strip;
 use swc_ecma_visit::visit_mut_pass;
-use tracing::{debug, info, warn};
 
 /// Size of the in-memory LRU cache for transforms
 const LRU_CACHE_SIZE: usize = 1000;
@@ -77,7 +77,13 @@ impl TransformCache {
 
         // Check LRU cache first (fast path)
         {
-            let mut lru = self.lru.lock().unwrap();
+            let mut lru = match self.lru.lock() {
+                Ok(lru) => lru,
+                Err(e) => {
+                    warn!("LRU cache lock poisoned, treating as cache miss: {}", e);
+                    return None;
+                }
+            };
             if let Some(result) = lru.get(key_str) {
                 if result.source_hash == source_hash {
                     crate::metrics::record_cache_hit();
@@ -95,7 +101,13 @@ impl TransformCache {
                         crate::metrics::record_cache_hit();
 
                         // Promote to LRU cache
-                        let mut lru = self.lru.lock().unwrap();
+                        let mut lru = match self.lru.lock() {
+                            Ok(lru) => lru,
+                            Err(e) => {
+                                warn!("LRU cache lock poisoned, skipping cache promotion: {}", e);
+                                return Some(result);
+                            }
+                        };
                         lru.put(key_str.to_string(), result.clone());
 
                         Some(result)
@@ -104,7 +116,8 @@ impl TransformCache {
                         crate::metrics::record_cache_miss();
                         None
                     }
-                    Err(_) => {
+                    Err(e) => {
+                        warn!("Failed to deserialize cached transform: {}", e);
                         crate::metrics::record_cache_miss();
                         None
                     }
@@ -114,7 +127,10 @@ impl TransformCache {
                 crate::metrics::record_cache_miss();
                 None
             }
-            Err(_) => None,
+            Err(e) => {
+                warn!("Sled cache read error (treating as cache miss): {}", e);
+                None
+            }
         }
     }
 
@@ -123,16 +139,31 @@ impl TransformCache {
     pub fn set(&self, path: &Path, result: &TransformResult) {
         let key = path.to_string_lossy().to_string();
 
-        // Store in LRU cache (fast)
+        // Store in LRU cache (fast, synchronous)
         {
-            let mut lru = self.lru.lock().unwrap();
-            lru.put(key.clone(), result.clone());
+            match self.lru.lock() {
+                Ok(mut lru) => {
+                    lru.put(key.clone(), result.clone());
+                }
+                Err(e) => {
+                    warn!("LRU cache lock poisoned, skipping LRU cache: {}", e);
+                    // Continue to try sled cache even if LRU fails
+                }
+            }
         }
 
-        // Store in sled cache (async flush handled by sled)
-        if let Ok(value) = serde_json::to_vec(result) {
-            let _ = self.db.insert(key.as_bytes(), value);
-            // No flush() - sled handles this asynchronously
+        // Store in sled cache using blocking I/O
+        // Note: sled operations are blocking but fast, and we don't await them
+        let db = self.db.clone();
+        let key_bytes = key.into_bytes();
+        let value = serde_json::to_vec(result).ok();
+
+        if let Some(value) = value {
+            // Direct blocking insert (sled handles this efficiently)
+            if let Err(e) = db.insert(&key_bytes, value) {
+                warn!("Failed to persist transform to sled cache: {}", e);
+            }
+            // sled handles flush asynchronously, no explicit flush needed
         }
     }
 }

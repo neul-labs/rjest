@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 mod args;
 mod client;
@@ -83,6 +83,9 @@ fn run_watch_mode(args: Args) -> Result<()> {
         r.store(false, Ordering::SeqCst);
     })?;
 
+    // Create a pooled client for the watch session (more efficient than creating new socket each poll)
+    let mut client = client::Client::new().context("Failed to connect to daemon")?;
+
     // Build watch start request
     let watch_request = WatchStartRequest {
         project_root: std::env::current_dir()?.to_string_lossy().to_string(),
@@ -92,7 +95,7 @@ fn run_watch_mode(args: Args) -> Result<()> {
 
     // Start watch session
     eprintln!("\nWatch mode enabled. Press Ctrl+C to exit.\n");
-    let response = client::send_request(Request::WatchStart(watch_request))?;
+    let response = client.send_request(Request::WatchStart(watch_request))?;
 
     let session_id = match response {
         Response::WatchStarted(watch_started) => {
@@ -113,14 +116,14 @@ fn run_watch_mode(args: Args) -> Result<()> {
         }
     };
 
-    // Poll loop
+    // Poll loop - reuses the same connection for better performance
     while running.load(Ordering::SeqCst) {
         let poll_request = WatchPollRequest {
             session_id: session_id.clone(),
             timeout_ms: 1000, // Poll every second
         };
 
-        let response = client::send_request(Request::WatchPoll(poll_request))?;
+        let response = client.send_request(Request::WatchPoll(poll_request))?;
 
         match response {
             Response::WatchPoll(poll_response) => {
@@ -154,7 +157,7 @@ fn run_watch_mode(args: Args) -> Result<()> {
     let stop_request = WatchStopRequest {
         session_id: session_id.clone(),
     };
-    let _ = client::send_request(Request::WatchStop(stop_request));
+    let _ = client.send_request(Request::WatchStop(stop_request));
 
     Ok(())
 }

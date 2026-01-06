@@ -7,6 +7,7 @@ use tracing::{debug, info};
 use walkdir::WalkDir;
 
 use crate::config::JestConfig;
+use crate::rjest_util;
 
 /// How long to cache discovery results before re-scanning
 const DISCOVERY_CACHE_TTL: Duration = Duration::from_secs(5);
@@ -167,7 +168,7 @@ impl TestDiscovery {
                 let path_str = path.to_string_lossy();
                 patterns.iter().any(|pattern| {
                     // Simple substring match or glob
-                    path_str.contains(pattern) || glob_match(pattern, &path_str)
+                    path_str.contains(pattern) || rjest_util::glob_match(pattern, &path_str)
                 })
             })
             .collect();
@@ -266,27 +267,40 @@ fn has_valid_extension(path: &Path, extensions: &[String]) -> bool {
         .unwrap_or(false)
 }
 
-fn glob_match(pattern: &str, path: &str) -> bool {
-    // Simple glob matching
-    let regex_pattern = pattern
-        .replace(".", "\\.")
-        .replace("**", "{{GLOBSTAR}}")
-        .replace("*", "[^/]*")
-        .replace("{{GLOBSTAR}}", ".*")
-        .replace("?", ".");
-
-    regex::Regex::new(&format!("{}$", regex_pattern))
-        .map(|re| re.is_match(path))
-        .unwrap_or(false)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::TempDir;
 
     #[test]
     fn test_is_hidden() {
-        // Would need to construct DirEntry for proper testing
+        // Create a temp directory structure to test is_hidden
+        let temp_dir = TempDir::new().unwrap();
+        let base = temp_dir.path();
+
+        // Create a hidden file
+        let hidden_path = base.join(".hidden");
+        fs::write(&hidden_path, "").unwrap();
+
+        // Create a normal file
+        let normal_path = base.join("normal.txt");
+        fs::write(&normal_path, "").unwrap();
+
+        // Create a nested hidden file
+        let nested_hidden = base.join("subdir").join(".gitignore");
+        fs::create_dir_all(nested_hidden.parent().unwrap()).unwrap();
+        fs::write(&nested_hidden, "").unwrap();
+
+        // Test using walkdir to get DirEntry objects
+        for entry in walkdir::WalkDir::new(base) {
+            let entry = entry.unwrap();
+            if entry.file_name().to_string_lossy() == ".hidden" {
+                assert!(is_hidden(&entry), "Hidden file should be detected");
+            } else if entry.file_name().to_string_lossy() == "normal.txt" {
+                assert!(!is_hidden(&entry), "Normal file should not be detected as hidden");
+            }
+        }
     }
 
     #[test]
@@ -294,6 +308,8 @@ mod tests {
         let exts = vec!["ts".to_string(), "tsx".to_string(), "js".to_string()];
         assert!(has_valid_extension(Path::new("foo.ts"), &exts));
         assert!(has_valid_extension(Path::new("foo.tsx"), &exts));
+        assert!(has_valid_extension(Path::new("foo.js"), &exts));
         assert!(!has_valid_extension(Path::new("foo.rs"), &exts));
+        assert!(!has_valid_extension(Path::new("foo"), &exts));
     }
 }

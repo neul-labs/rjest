@@ -82,6 +82,13 @@ pub struct MetricsSnapshot {
 }
 
 impl MetricsSnapshot {
+    /// Get total number of transforms (cache hits + misses)
+    pub fn transform_count(&self) -> u64 {
+        self.cache_hits + self.cache_misses
+    }
+}
+
+impl MetricsSnapshot {
     /// Calculate cache hit rate (0.0 - 1.0)
     pub fn cache_hit_rate(&self) -> f64 {
         let total = self.cache_hits + self.cache_misses;

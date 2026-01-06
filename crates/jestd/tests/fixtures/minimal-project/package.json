@@ -1,0 +1,10 @@
+{
+  "name": "minimal-test-project",
+  "version": "1.0.0",
+  "private": true,
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": ["**/*.test.js"],
+    "transform": {}
+  }
+}

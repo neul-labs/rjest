@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Find the git root directory by walking up from the given path
 fn find_git_root(start: &Path) -> Option<PathBuf> {
@@ -45,9 +45,13 @@ pub fn get_changed_files(project_root: &Path) -> Result<Vec<PathBuf>> {
     // Filter to only files within project_root
     let project_root_canonical = project_root.canonicalize().unwrap_or(project_root.to_path_buf());
     changed_files.retain(|f| {
-        f.canonicalize()
-            .map(|c| c.starts_with(&project_root_canonical))
-            .unwrap_or(false)
+        match f.canonicalize() {
+            Ok(canonical) => canonical.starts_with(&project_root_canonical),
+            Err(e) => {
+                warn!("Failed to canonicalize changed file {}: {}", f.display(), e);
+                false
+            }
+        }
     });
 
     // Deduplicate
@@ -64,6 +68,12 @@ pub fn get_changed_files(project_root: &Path) -> Result<Vec<PathBuf>> {
 
 /// Get uncommitted changes (both staged and unstaged)
 fn get_uncommitted_changes(project_root: &Path) -> Result<Vec<PathBuf>> {
+    // Validate the path before passing to Command
+    if !project_root.exists() || !project_root.is_dir() {
+        warn!("Invalid project root for git command: {}", project_root.display());
+        return Ok(vec![]);
+    }
+
     let output = Command::new("git")
         .args(["status", "--porcelain", "-uall"])
         .current_dir(project_root)
@@ -100,6 +110,12 @@ fn get_uncommitted_changes(project_root: &Path) -> Result<Vec<PathBuf>> {
 
 /// Get files changed since merge-base with main/master branch
 fn get_changes_since_merge_base(project_root: &Path) -> Result<Vec<PathBuf>> {
+    // Validate the path before passing to Command
+    if !project_root.exists() || !project_root.is_dir() {
+        warn!("Invalid project root for git command: {}", project_root.display());
+        return Ok(vec![]);
+    }
+
     // Try to find the main branch
     let main_branch = get_main_branch(project_root)?;
 
@@ -294,5 +310,50 @@ mod tests {
 
         // utils.test.ts should match utils.ts
         assert!(related.contains(&PathBuf::from("/project/src/utils.test.ts")));
+    }
+
+    #[test]
+    fn test_get_changed_files_non_git_directory() {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+        let result = get_changed_files(temp_dir.path());
+        // Non-git directory should return empty vec
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_get_changed_files_nonexistent_directory() {
+        let nonexistent = PathBuf::from("/tmp/this-does-not-exist-12345");
+        let result = get_changed_files(&nonexistent);
+        // Non-existent directory should return empty vec (not an error)
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_find_related_test_files_empty_inputs() {
+        let changed = vec![];
+        let tests = vec![];
+        let related = find_related_test_files(&changed, &tests);
+        assert!(related.is_empty());
+    }
+
+    #[test]
+    fn test_find_related_test_files_only_source_files() {
+        let changed = vec![
+            PathBuf::from("/project/src/utils.ts"),
+        ];
+        let tests = vec![];
+        let related = find_related_test_files(&changed, &tests);
+        assert!(related.is_empty());
+    }
+
+    #[test]
+    fn test_find_related_test_files_only_tests() {
+        let changed = vec![];
+        let tests = vec![
+            PathBuf::from("/project/src/utils.test.ts"),
+        ];
+        let related = find_related_test_files(&changed, &tests);
+        assert!(related.is_empty());
     }
 }

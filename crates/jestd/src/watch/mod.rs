@@ -1,8 +1,8 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::{debug, info};
@@ -34,11 +34,17 @@ impl FileWatcher {
 
     /// Watch a directory recursively
     pub fn watch(&mut self, path: &Path) -> Result<()> {
-        let path = path.canonicalize()?;
-        let mut watched = self.watched_paths.lock().unwrap();
+        let path = path.canonicalize().with_context(|| format!("Failed to canonicalize path: {}", path.display()))?;
+        let mut watched = match self.watched_paths.lock() {
+            Ok(watched) => watched,
+            Err(e) => {
+                return Err(anyhow::anyhow!("Failed to lock watched_paths for watching: {}", e));
+            }
+        };
 
         if !watched.contains(&path) {
-            self.watcher.watch(&path, RecursiveMode::Recursive)?;
+            self.watcher.watch(&path, RecursiveMode::Recursive)
+                .with_context(|| format!("Failed to watch path: {}", path.display()))?;
             watched.insert(path.clone());
             info!("Watching {}", path.display());
         }
@@ -48,11 +54,17 @@ impl FileWatcher {
 
     /// Stop watching a directory
     pub fn unwatch(&mut self, path: &Path) -> Result<()> {
-        let path = path.canonicalize()?;
-        let mut watched = self.watched_paths.lock().unwrap();
+        let path = path.canonicalize().with_context(|| format!("Failed to canonicalize path: {}", path.display()))?;
+        let mut watched = match self.watched_paths.lock() {
+            Ok(watched) => watched,
+            Err(e) => {
+                return Err(anyhow::anyhow!("Failed to lock watched_paths for unwatching: {}", e));
+            }
+        };
 
         if watched.remove(&path) {
-            self.watcher.unwatch(&path)?;
+            self.watcher.unwatch(&path)
+                .with_context(|| format!("Failed to unwatch path: {}", path.display()))?;
             info!("Stopped watching {}", path.display());
         }
 

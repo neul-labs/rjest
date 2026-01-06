@@ -6,6 +6,7 @@ mod config;
 mod discovery;
 mod git;
 mod metrics;
+mod rjest_util;
 mod server;
 mod transform;
 mod watch;
