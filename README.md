@@ -1,8 +1,29 @@
 # rjest
 
-> **Status:** Working prototype with **100× speedup** on warm runs (14ms vs 1.4s)
+[![Crates.io](https://img.shields.io/crates/v/jestd.svg)](https://crates.io/crates/jestd)
+[![Documentation](https://img.shields.io/badge/docs-neullabs.com-blue)](https://docs.neullabs.com/rjest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![CI](https://github.com/neul-labs/rjest/actions/workflows/ci.yml/badge.svg)](https://github.com/neul-labs/rjest/actions/workflows/ci.yml)
 
-`rjest` is a Jest-compatible test runner that keeps a long-lived Rust daemon in the background so repeated test runs return results in **~14 milliseconds** instead of seconds. The daemon caches SWC transforms, maintains pre-warmed Node workers, and orchestrates parallel test execution while a thin CLI shim forwards commands and renders Jest-style output. Under the hood it uses nng for low-latency IPC, sled for persistent caches, and native SWC for TypeScript/JSX compilation.
+**A blazing-fast Jest-compatible test runner. 100× faster warm runs. Zero config changes.**
+
+---
+
+`rjest` is a drop-in replacement for Jest that keeps a Rust daemon running in the background. Your tests return in **~14 milliseconds** instead of seconds. No configuration changes needed—just install and run.
+
+```bash
+npm install -D rjest && npx rjest
+```
+
+The daemon caches SWC transforms, maintains pre-warmed Node workers, and orchestrates parallel test execution. Under the hood it uses nng for low-latency IPC, sled for persistent caches, and native SWC for TypeScript/JSX compilation.
+
+## Highlights
+
+- **100× faster warm runs** — 14ms vs 1.4s on typical TypeScript projects
+- **Zero config** — reads your existing `jest.config.*` files
+- **Drop-in replacement** — same CLI flags, same test syntax, same snapshots
+- **Built for AI agents** — structured JSON output, instant feedback loops
+- **Persistent caching** — transforms survive restarts, no rebuild needed
 
 ## Why it exists
 
@@ -167,11 +188,11 @@ With these pieces in place, `rjest` becomes an ideal test runner for AI agents a
 
 ## Contributing
 
-Contributions are welcome. Please open an issue to discuss significant changes before submitting a PR.
+Contributions are welcome! Please open an issue to discuss significant changes before submitting a PR.
 
 ```bash
 # Clone and build
-git clone https://github.com/user/rjest.git
+git clone https://github.com/neul-labs/rjest.git
 cd rjest
 cargo build
 

@@ -3,6 +3,9 @@ name = "jestd"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+documentation.workspace = true
+readme.workspace = true
 description = "Jest-compatible test runner daemon"
 
 [[bin]]

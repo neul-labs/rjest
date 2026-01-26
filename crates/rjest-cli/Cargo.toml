@@ -3,6 +3,9 @@ name = "rjest-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+documentation.workspace = true
+readme.workspace = true
 description = "Jest-compatible CLI that communicates with jestd daemon"
 
 [[bin]]

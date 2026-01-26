@@ -11,7 +11,9 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/user/rjest"
+repository = "https://github.com/neul-labs/rjest"
+documentation = "https://docs.neullabs.com/rjest"
+readme = "README.md"
 
 [workspace.dependencies]
 # Async runtime
@@ -64,4 +66,4 @@ rayon = "1.10"
 lru = "0.12"
 
 # Internal crates
-rjest-protocol = { path = "crates/rjest-protocol" }
+rjest-protocol = { version = "0.1.0", path = "crates/rjest-protocol" }
