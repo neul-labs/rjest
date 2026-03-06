@@ -5,12 +5,21 @@ use serde::{Deserialize, Serialize};
 /// Uses UID only (not PID) so both CLI and daemon use the same path.
 /// The daemon cleans up any stale socket on startup.
 pub fn socket_path() -> std::path::PathBuf {
-    let uid = unsafe { libc::getuid() };
+    #[cfg(unix)]
+    {
+        let uid = unsafe { libc::getuid() };
+        if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+            std::path::PathBuf::from(runtime_dir).join(format!("rjest-{}.sock", uid))
+        } else {
+            std::path::PathBuf::from(format!("/tmp/rjest-{}.sock", uid))
+        }
+    }
 
-    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-        std::path::PathBuf::from(runtime_dir).join(format!("rjest-{}.sock", uid))
-    } else {
-        std::path::PathBuf::from(format!("/tmp/rjest-{}.sock", uid))
+    #[cfg(windows)]
+    {
+        // On Windows, use a named pipe path in the user's temp directory
+        let username = std::env::var("USERNAME").unwrap_or_else(|_| "default".to_string());
+        std::path::PathBuf::from(format!(r"\\.\pipe\rjest-{}", username))
     }
 }
 

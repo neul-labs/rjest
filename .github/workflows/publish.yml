@@ -94,9 +94,19 @@ jobs:
           path: ./packages/rjest/prebuilds
           merge-multiple: true
 
-      - name: Create SHASUMS file
+      - name: Prepare prebuilds
         working-directory: ./packages/rjest/prebuilds
         run: |
+          # Create archives from the downloaded binaries
+          for dir in */; do
+            target=$(basename "$dir")
+            if [[ "$target" == *"windows"* ]]; then
+              zip -j "rjest-${target}.zip" "$dir"/*
+            else
+              tar -czf "rjest-${target}.tar.gz" -C "$dir" .
+            fi
+          done
+          rm -rf */
           shasum -a 256 *.tar.gz *.zip > SHASUMS256.txt
           cat SHASUMS256.txt
 
@@ -125,22 +135,27 @@ jobs:
             runner: ubuntu-latest
             ext: ''
             os: linux
+            cross: false
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-latest
             ext: ''
             os: linux
+            cross: true
           - target: x86_64-apple-darwin
-            runner: macos-latest
+            runner: macos-13
             ext: ''
             os: macos
+            cross: false
           - target: aarch64-apple-darwin
-            runner: macos-latest
+            runner: macos-14
             ext: ''
             os: macos
+            cross: false
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
             ext: '.exe'
             os: windows
+            cross: false
     env:
       VERSION: ${{ needs.check-version.outputs.version }}
     steps:
@@ -151,19 +166,30 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Build binary
+      - name: Install cross (for cross-compilation)
+        if: matrix.cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build binary (native)
+        if: ${{ !matrix.cross }}
         run: cargo build --release --all-features --target ${{ matrix.target }}
 
-      - name: Prepare binary for upload
+      - name: Build binary (cross)
+        if: matrix.cross
+        run: cross build --release --all-features --target ${{ matrix.target }}
+
+      - name: Prepare binaries for upload
+        shell: bash
         run: |
-          mkdir -p artifacts
-          cp "target/${{ matrix.target }}/release/jest${{ matrix.ext }}" "artifacts/jest-${{ matrix.os }}-${{ matrix.target }}${{ matrix.ext }}"
+          mkdir -p artifacts/rjest-${{ matrix.os }}-${{ matrix.target }}
+          cp "target/${{ matrix.target }}/release/jest${{ matrix.ext }}" "artifacts/rjest-${{ matrix.os }}-${{ matrix.target }}/"
+          cp "target/${{ matrix.target }}/release/jestd${{ matrix.ext }}" "artifacts/rjest-${{ matrix.os }}-${{ matrix.target }}/"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: binary-${{ matrix.target }}
-          path: artifacts/
+          path: artifacts/rjest-${{ matrix.os }}-${{ matrix.target }}/
           retention-days: 7
 
   # Create GitHub release with installers
@@ -180,77 +206,74 @@ jobs:
           path: artifacts
 
       - name: Display artifacts
-        run: ls -la artifacts/
+        run: ls -laR artifacts/
 
       - name: Create archive for Linux x86_64
         run: |
           cd artifacts/binary-x86_64-unknown-linux-gnu
-          tar -czf ../../artifacts/jest-linux-x86_64.tar.gz jest-linux-x86_64-unknown-linux-gnu
-          shasum -a 256 ../../artifacts/jest-linux-x86_64.tar.gz
+          tar -czf ../rjest-linux-x86_64.tar.gz jest jestd
+          shasum -a 256 ../rjest-linux-x86_64.tar.gz
 
       - name: Create archive for Linux aarch64
         run: |
           cd artifacts/binary-aarch64-unknown-linux-gnu
-          tar -czf ../../artifacts/jest-linux-aarch64.tar.gz jest-linux-aarch64-unknown-linux-gnu
-          shasum -a 256 ../../artifacts/jest-linux-aarch64.tar.gz
+          tar -czf ../rjest-linux-aarch64.tar.gz jest jestd
+          shasum -a 256 ../rjest-linux-aarch64.tar.gz
 
       - name: Create archive for macOS x86_64
         run: |
           cd artifacts/binary-x86_64-apple-darwin
-          tar -czf ../../artifacts/jest-macos-x86_64.tar.gz jest-macos-x86_64-apple-darwin
-          shasum -a 256 ../../artifacts/jest-macos-x86_64.tar.gz
+          tar -czf ../rjest-macos-x86_64.tar.gz jest jestd
+          shasum -a 256 ../rjest-macos-x86_64.tar.gz
 
       - name: Create archive for macOS arm64
         run: |
           cd artifacts/binary-aarch64-apple-darwin
-          tar -czf ../../artifacts/jest-macos-arm64.tar.gz jest-macos-aarch64-apple-darwin
-          shasum -a 256 ../../artifacts/jest-macos-arm64.tar.gz
+          tar -czf ../rjest-macos-arm64.tar.gz jest jestd
+          shasum -a 256 ../rjest-macos-arm64.tar.gz
 
       - name: Create zip for Windows
         run: |
           cd artifacts/binary-x86_64-pc-windows-msvc
-          zip -r ../../artifacts/jest-windows-x86_64.zip jest-windows-x86_64-pc-windows-msvc.exe
-          shasum -a 256 ../../artifacts/jest-windows-x86_64.zip
+          zip -r ../rjest-windows-x86_64.zip jest.exe jestd.exe
+          shasum -a 256 ../rjest-windows-x86_64.zip
 
       - name: Create Homebrew formula
         run: |
-          cat > artifacts/jest.rb << 'EOF'
-          class Jest < Formula
+          cat > artifacts/rjest.rb << 'EOF'
+          class Rjest < Formula
             desc "A fast Jest-compatible test runner written in Rust"
-            homepage "https://github.com/dipankarsarkar/rjest"
+            homepage "https://github.com/neul-labs/rjest"
             version ENV["VERSION"]
             license "MIT"
 
             on_macos do
               if Hardware::CPU.intel?
-                url "https://github.com/dipankarsarkar/rjest/releases/download/v#{version}/jest-macos-x86_64.tar.gz"
-                sha256 ENV["HOMEBREW_LINUX_X86_64_SHA"]
-                puts "Intel Mac detected, using x86_64 binary"
+                url "https://github.com/neul-labs/rjest/releases/download/v#{version}/rjest-macos-x86_64.tar.gz"
+                sha256 ENV["HOMEBREW_MACOS_X86_64_SHA"]
               else
-                url "https://github.com/dipankarsarkar/rjest/releases/download/v#{version}/jest-macos-arm64.tar.gz"
-                sha256 ENV["HOMEBREW_LINUX_ARM64_SHA"]
-                puts "Apple Silicon detected, using arm64 binary"
+                url "https://github.com/neul-labs/rjest/releases/download/v#{version}/rjest-macos-arm64.tar.gz"
+                sha256 ENV["HOMEBREW_MACOS_ARM64_SHA"]
               end
             end
 
             on_linux do
               if Hardware::CPU.intel?
-                url "https://github.com/dipankarsarkar/rjest/releases/download/v#{version}/jest-linux-x86_64.tar.gz"
+                url "https://github.com/neul-labs/rjest/releases/download/v#{version}/rjest-linux-x86_64.tar.gz"
                 sha256 ENV["HOMEBREW_LINUX_X86_64_SHA"]
-                puts "Intel/AMD x86_64 detected, using x86_64 binary"
               else
-                url "https://github.com/dipankarsarkar/rjest/releases/download/v#{version}/jest-linux-aarch64.tar.gz"
+                url "https://github.com/neul-labs/rjest/releases/download/v#{version}/rjest-linux-aarch64.tar.gz"
                 sha256 ENV["HOMEBREW_LINUX_ARM64_SHA"]
-                puts "ARM64 detected, using aarch64 binary"
               end
             end
 
             def install
-              bin.install "jest-#{OS.kernel_name.downcase}-#{Hardware::CPU.arch}-unknown-linux-gnu"
+              bin.install "jest"
+              bin.install "jestd"
             end
 
             test do
-              system "#{bin}/jest --version"
+              system "#{bin}/jest", "--version"
             end
           end
           EOF
@@ -298,12 +321,12 @@ jobs:
           draft: false
           prerelease: false
           files: |
-            artifacts/jest-linux-x86_64.tar.gz
-            artifacts/jest-linux-aarch64.tar.gz
-            artifacts/jest-macos-x86_64.tar.gz
-            artifacts/jest-macos-arm64.tar.gz
-            artifacts/jest-windows-x86_64.zip
-            artifacts/jest.rb
+            artifacts/rjest-linux-x86_64.tar.gz
+            artifacts/rjest-linux-aarch64.tar.gz
+            artifacts/rjest-macos-x86_64.tar.gz
+            artifacts/rjest-macos-arm64.tar.gz
+            artifacts/rjest-windows-x86_64.zip
+            artifacts/rjest.rb
             artifacts/pypi/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -321,89 +344,66 @@ jobs:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
 
-      - name: Download release assets
+      - name: Download all binary artifacts
         uses: actions/download-artifact@v4
         with:
-          name: binary-x86_64-unknown-linux-gnu
+          pattern: binary-*
           path: artifacts
-      - name: Download release assets aarch64
-        uses: actions/download-artifact@v4
-        with:
-          name: binary-aarch64-unknown-linux-gnu
-          path: artifacts/aarch64
-      - name: Download release assets macos x86_64
-        uses: actions/download-artifact@v4
-        with:
-          name: binary-x86_64-apple-darwin
-          path: artifacts/macos-x86_64
-      - name: Download release assets macos arm64
-        uses: actions/download-artifact@v4
-        with:
-          name: binary-aarch64-apple-darwin
-          path: artifacts/macos-arm64
+          merge-multiple: false
 
-      - name: Calculate checksums
+      - name: Create archives and calculate checksums
         run: |
+          # Create archives from downloaded binaries
           cd artifacts
-          echo "HOMEBREW_LINUX_X86_64_SHA=$(shasum -a 256 jest-linux-x86_64.tar.gz | cut -d' ' -f1)" >> $GITHUB_ENV
-          cd ..
-          cd artifacts/aarch64
-          echo "HOMEBREW_LINUX_ARM64_SHA=$(shasum -a 256 jest-linux-aarch64.tar.gz | cut -d' ' -f1)" >> $GITHUB_ENV
-          cd ../..
-          cd artifacts/macos-x86_64
-          echo "HOMEBREW_MACOS_X86_64_SHA=$(shasum -a 256 jest-macos-x86_64.tar.gz | cut -d' ' -f1)" >> $GITHUB_ENV
-          cd ../..
-          cd artifacts/macos-arm64
-          echo "HOMEBREW_MACOS_ARM64_SHA=$(shasum -a 256 jest-macos-arm64.tar.gz | cut -d' ' -f1)" >> $GITHUB_ENV
+          tar -czf rjest-linux-x86_64.tar.gz -C binary-x86_64-unknown-linux-gnu jest jestd
+          echo "HOMEBREW_LINUX_X86_64_SHA=$(shasum -a 256 rjest-linux-x86_64.tar.gz | cut -d' ' -f1)" >> $GITHUB_ENV
+
+          tar -czf rjest-linux-aarch64.tar.gz -C binary-aarch64-unknown-linux-gnu jest jestd
+          echo "HOMEBREW_LINUX_ARM64_SHA=$(shasum -a 256 rjest-linux-aarch64.tar.gz | cut -d' ' -f1)" >> $GITHUB_ENV
+
+          tar -czf rjest-macos-x86_64.tar.gz -C binary-x86_64-apple-darwin jest jestd
+          echo "HOMEBREW_MACOS_X86_64_SHA=$(shasum -a 256 rjest-macos-x86_64.tar.gz | cut -d' ' -f1)" >> $GITHUB_ENV
+
+          tar -czf rjest-macos-arm64.tar.gz -C binary-aarch64-apple-darwin jest jestd
+          echo "HOMEBREW_MACOS_ARM64_SHA=$(shasum -a 256 rjest-macos-arm64.tar.gz | cut -d' ' -f1)" >> $GITHUB_ENV
 
       - name: Update Homebrew formula
         run: |
           VERSION=${{ needs.check-version.outputs.version }}
-          cat > homebrew-tap/jest.rb << EOF
-          class Jest < Formula
+          cat > homebrew-tap/rjest.rb << EOF
+          class Rjest < Formula
             desc "A fast Jest-compatible test runner written in Rust"
-            homepage "https://github.com/dipankarsarkar/rjest"
+            homepage "https://github.com/neul-labs/rjest"
             version "${VERSION}"
             license "MIT"
 
             on_macos do
               if Hardware::CPU.intel?
-                url "https://github.com/dipankarsarkar/rjest/releases/download/v${VERSION}/jest-macos-x86_64.tar.gz"
+                url "https://github.com/neul-labs/rjest/releases/download/v${VERSION}/rjest-macos-x86_64.tar.gz"
                 sha256 "${HOMEBREW_MACOS_X86_64_SHA}"
               else
-                url "https://github.com/dipankarsarkar/rjest/releases/download/v${VERSION}/jest-macos-arm64.tar.gz"
+                url "https://github.com/neul-labs/rjest/releases/download/v${VERSION}/rjest-macos-arm64.tar.gz"
                 sha256 "${HOMEBREW_MACOS_ARM64_SHA}"
               end
             end
 
             on_linux do
               if Hardware::CPU.intel?
-                url "https://github.com/dipankarsarkar/rjest/releases/download/v${VERSION}/jest-linux-x86_64.tar.gz"
+                url "https://github.com/neul-labs/rjest/releases/download/v${VERSION}/rjest-linux-x86_64.tar.gz"
                 sha256 "${HOMEBREW_LINUX_X86_64_SHA}"
               else
-                url "https://github.com/dipankarsarkar/rjest/releases/download/v${VERSION}/jest-linux-aarch64.tar.gz"
+                url "https://github.com/neul-labs/rjest/releases/download/v${VERSION}/rjest-linux-aarch64.tar.gz"
                 sha256 "${HOMEBREW_LINUX_ARM64_SHA}"
               end
             end
 
             def install
-              if OS.mac?
-                if Hardware::CPU.intel?
-                  bin.install "jest-macos-x86_64-apple-darwin" => "jest"
-                else
-                  bin.install "jest-macos-aarch64-apple-darwin" => "jest"
-                end
-              else
-                if Hardware::CPU.intel? || Hardware::CPU.amd?
-                  bin.install "jest-linux-x86_64-unknown-linux-gnu" => "jest"
-                else
-                  bin.install "jest-linux-aarch64-unknown-linux-gnu" => "jest"
-                end
-              end
+              bin.install "jest"
+              bin.install "jestd"
             end
 
             test do
-              system "#{bin}/jest --version"
+              system "#{bin}/jest", "--version"
             end
           end
           EOF
@@ -413,8 +413,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add jest.rb
-          git commit -m "Update jest to v${{ needs.check-version.outputs.version }}"
+          git add rjest.rb
+          git commit -m "Update rjest to v${{ needs.check-version.outputs.version }}"
           git push
 
   # Publish to PyPI using maturin

@@ -1,0 +1,76 @@
+# Dockerfile for macOS cross-compilation using osxcross
+#
+# To build this image, you need a macOS SDK tarball (e.g., MacOSX14.0.sdk.tar.xz)
+# See: https://github.com/tpoechtrager/osxcross#packaging-the-sdk
+#
+# Build:
+#   docker build -f docker/Dockerfile.osxcross \
+#     --build-arg SDK_VERSION=14.0 \
+#     -t rjest-osxcross:latest .
+#
+# The SDK file should be placed in docker/sdk/MacOSX<VERSION>.sdk.tar.xz
+
+FROM ghcr.io/cross-rs/x86_64-unknown-linux-gnu:main AS builder
+
+ARG SDK_VERSION=14.0
+ARG OSXCROSS_REV=master
+ARG DARWIN_VERSION=23
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    clang \
+    cmake \
+    git \
+    libssl-dev \
+    libxml2-dev \
+    lzma-dev \
+    patch \
+    python3 \
+    xz-utils \
+    zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Clone osxcross
+WORKDIR /opt
+RUN git clone --depth 1 -b ${OSXCROSS_REV} https://github.com/tpoechtrager/osxcross.git
+
+# Copy SDK (must be provided during build)
+COPY docker/sdk/MacOSX${SDK_VERSION}.sdk.tar.xz /opt/osxcross/tarballs/
+
+# Build osxcross
+WORKDIR /opt/osxcross
+ENV UNATTENDED=1
+RUN ./build.sh
+
+# Final image
+FROM ghcr.io/cross-rs/x86_64-unknown-linux-gnu:main
+
+ARG SDK_VERSION=14.0
+ARG DARWIN_VERSION=23
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    clang \
+    libssl-dev \
+    libxml2-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy osxcross from builder
+COPY --from=builder /opt/osxcross/target /opt/osxcross
+
+# Set environment variables
+ENV PATH="/opt/osxcross/bin:${PATH}" \
+    LD_LIBRARY_PATH="/opt/osxcross/lib:${LD_LIBRARY_PATH}" \
+    OSXCROSS_NO_INCLUDE_PATH_WARNINGS=1
+
+# Configure for x86_64-apple-darwin
+ENV CC_x86_64_apple_darwin=o64-clang \
+    CXX_x86_64_apple_darwin=o64-clang++ \
+    AR_x86_64_apple_darwin=x86_64-apple-darwin${DARWIN_VERSION}-ar \
+    CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER=o64-clang
+
+# Configure for aarch64-apple-darwin
+ENV CC_aarch64_apple_darwin=oa64-clang \
+    CXX_aarch64_apple_darwin=oa64-clang++ \
+    AR_aarch64_apple_darwin=aarch64-apple-darwin${DARWIN_VERSION}-ar \
+    CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=oa64-clang

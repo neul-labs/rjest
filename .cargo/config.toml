@@ -1,0 +1,9 @@
+# Cargo configuration for cross-compilation
+
+# macOS targets (for use with osxcross via cross/docker)
+# Use the short wrapper names which set up correct SDK/linker paths
+[target.x86_64-apple-darwin]
+linker = "o64-clang"
+
+[target.aarch64-apple-darwin]
+linker = "oa64-clang"

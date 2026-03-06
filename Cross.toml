@@ -1,0 +1,24 @@
+[build.env]
+passthrough = ["RUSTFLAGS"]
+
+[target.aarch64-unknown-linux-gnu]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main"
+
+[target.x86_64-unknown-linux-gnu]
+image = "ghcr.io/cross-rs/x86_64-unknown-linux-gnu:main"
+
+[target.x86_64-pc-windows-gnu]
+image = "ghcr.io/cross-rs/x86_64-pc-windows-gnu:main"
+
+# macOS targets using osxcross
+# Build images first: ./scripts/build-macos-images.sh
+[target.x86_64-apple-darwin]
+image = "rjest-macos-x86_64:latest"
+[target.x86_64-apple-darwin.env]
+passthrough = ["RUSTFLAGS", "CMAKE_TOOLCHAIN_FILE", "MACOSX_DEPLOYMENT_TARGET"]
+volumes = ["CC", "CXX", "AR"]
+
+[target.aarch64-apple-darwin]
+image = "rjest-macos-aarch64:latest"
+[target.aarch64-apple-darwin.env]
+passthrough = ["RUSTFLAGS", "CMAKE_TOOLCHAIN_FILE", "MACOSX_DEPLOYMENT_TARGET"]

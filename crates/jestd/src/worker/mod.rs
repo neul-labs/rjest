@@ -228,43 +228,53 @@ impl Worker {
     }
 
     /// Gracefully terminate the worker process
-    /// First tries SIGTERM, then SIGKILL if it doesn't respond
+    /// First tries SIGTERM (Unix) or taskkill (Windows), then force kills if needed
     fn kill(&mut self) {
-        // Try graceful shutdown with SIGTERM first
-        let pid = self.process.id();
+        #[cfg(unix)]
+        {
+            // Try graceful shutdown with SIGTERM first
+            let pid = self.process.id();
 
-        // Send SIGTERM
-        unsafe {
-            libc::kill(pid as libc::pid_t, libc::SIGTERM);
-        }
+            // Send SIGTERM
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGTERM);
+            }
 
-        // Wait up to 2 seconds for graceful shutdown
-        let timeout = std::time::Duration::from_secs(2);
-        let start = std::time::Instant::now();
+            // Wait up to 2 seconds for graceful shutdown
+            let timeout = std::time::Duration::from_secs(2);
+            let start = std::time::Instant::now();
 
-        loop {
-            match self.process.try_wait() {
-                Ok(Some(_)) => {
-                    // Process exited gracefully
-                    return;
-                }
-                Ok(None) => {
-                    // Process still running
-                    if start.elapsed() > timeout {
-                        // Timeout - force kill with SIGKILL
-                        unsafe {
-                            libc::kill(pid as libc::pid_t, libc::SIGKILL);
-                        }
-                        let _ = self.process.wait();
+            loop {
+                match self.process.try_wait() {
+                    Ok(Some(_)) => {
+                        // Process exited gracefully
                         return;
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                }
-                Err(_) => {
-                    // Error waiting - process is gone
-                    return;
+                    Ok(None) => {
+                        // Process still running
+                        if start.elapsed() > timeout {
+                            // Timeout - force kill with SIGKILL
+                            unsafe {
+                                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                            }
+                            let _ = self.process.wait();
+                            return;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                    Err(_) => {
+                        // Error waiting - process is gone
+                        return;
+                    }
                 }
             }
+        }
+
+        #[cfg(windows)]
+        {
+            // On Windows, just kill the process directly
+            let _ = self.process.kill();
+            let _ = self.process.wait();
         }
     }
 

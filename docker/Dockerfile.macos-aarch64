@@ -1,0 +1,35 @@
+# Dockerfile for aarch64-apple-darwin cross-compilation
+#
+# Uses joseluisq/rust-linux-darwin-builder as base which includes osxcross
+# Note: Verify Apple SDK licensing compliance for your use case
+#
+# Build: docker build -f docker/Dockerfile.macos-aarch64 -t rjest-macos-aarch64:latest .
+
+FROM joseluisq/rust-linux-darwin-builder:1.85
+
+# Install additional dependencies if needed
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy CMake toolchain file
+COPY docker/cmake-toolchains/macos-aarch64.cmake /toolchain.cmake
+
+# Create symlinks so clang can find the osxcross linker as 'ld'
+# The issue is that clang looks for 'ld' in PATH but osxcross only has target-prefixed linkers
+RUN ln -sf /usr/local/osxcross/target/bin/aarch64-apple-darwin22.4-ld /usr/local/osxcross/target/bin/ld
+
+# Set up cross-compilation environment
+# Use the oa64-clang wrapper which sets up correct SDK paths
+ENV PATH="/usr/local/osxcross/target/bin:${PATH}" \
+    CROSS_COMPILE=aarch64-apple-darwin \
+    CARGO_BUILD_TARGET=aarch64-apple-darwin \
+    CC=oa64-clang \
+    CXX=oa64-clang++ \
+    AR=aarch64-apple-darwin22.4-ar \
+    CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=oa64-clang \
+    CMAKE_TOOLCHAIN_FILE=/toolchain.cmake \
+    MACOSX_DEPLOYMENT_TARGET=11.0
+
+# Pre-add the rust target
+RUN rustup target add aarch64-apple-darwin
