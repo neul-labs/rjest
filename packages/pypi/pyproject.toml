@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rjest-cli"
+version = "0.1.1"
+description = "A fast Jest-compatible test runner written in Rust"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Topic :: Software Development :: Testing",
+]
+keywords = ["jest", "testing", "rust", "runner"]
+authors = [
+    {name = "Dipankar Sarkar", email = "dipankarsarkar@outlook.com"}
+]
+
+[project.urls]
+Homepage = "https://github.com/neul-labs/rjest"
+Repository = "https://github.com/neul-labs/rjest"
+Issues = "https://github.com/neul-labs/rjest/issues"
+
+[project.scripts]
+jest = "rjest_cli.cli:main"
+rjest = "rjest_cli.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["rjest_cli*"]

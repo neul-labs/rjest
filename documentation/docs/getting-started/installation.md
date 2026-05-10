@@ -2,17 +2,61 @@
 
 ## Requirements
 
-- **Rust** 1.70 or later (for building from source)
 - **Node.js** 18 or later (for running tests)
 - **npm** or **yarn** (for project dependencies)
 
+## Install from npm
+
+The recommended way to install `rjest` for Node.js projects:
+
+```bash
+npm install -D rjest-cli
+```
+
+Then use it just like Jest:
+
+```bash
+npx rjest
+npx rjest --watch
+npx rjest --coverage
+```
+
+## Install from Homebrew
+
+On macOS and Linux:
+
+```bash
+brew tap neul-labs/tap
+brew install rjest
+```
+
+## Install from crates.io
+
+If you have the Rust toolchain installed:
+
+```bash
+cargo install rjest
+```
+
+This installs the `jest` and `jestd` binaries into your Cargo bin directory (usually `~/.cargo/bin`).
+
+## Install from PyPI
+
+For Python projects or environments where `pip` is preferred:
+
+```bash
+pip install rjest-cli
+```
+
+This installs a Python wrapper that calls the Rust binary.
+
 ## Install from Source
 
-Currently, rjest is installed by building from source:
+Build from source if you need the latest changes or want to contribute:
 
 ```bash
 # Clone the repository
-git clone https://github.com/user/rjest.git
+git clone https://github.com/neul-labs/rjest.git
 cd rjest
 
 # Build release binaries

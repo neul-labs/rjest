@@ -94,9 +94,7 @@ pub struct Args {
 impl Args {
     /// Convert CLI args to a RunRequest for the daemon
     pub fn to_run_request(&self) -> Result<RunRequest> {
-        let project_root = std::env::current_dir()?
-            .to_string_lossy()
-            .to_string();
+        let project_root = std::env::current_dir()?.to_string_lossy().to_string();
 
         Ok(RunRequest {
             project_root,

@@ -469,7 +469,7 @@ publish_npm() {
         return 0
     fi
 
-    local npm_dir="$REPO_ROOT/packages/rjest"
+    local npm_dir="$REPO_ROOT/packages/npm"
     if [[ ! -d "$npm_dir" ]]; then
         warn "npm package directory not found: $npm_dir"
         return 1
@@ -516,7 +516,7 @@ publish_pypi() {
         return 0
     fi
 
-    local pypi_dir="$REPO_ROOT/packages/rjest-python"
+    local pypi_dir="$REPO_ROOT/packages/pypi"
 
     # If python package doesn't exist, create a minimal one
     if [[ ! -d "$pypi_dir" ]]; then

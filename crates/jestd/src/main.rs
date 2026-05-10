@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use anyhow::Result;
 use tracing::info;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -16,8 +18,8 @@ mod worker;
 async fn main() -> Result<()> {
     // Initialize structured logging with environment filter
     // Can be controlled via RUST_LOG env var (e.g., RUST_LOG=jestd=debug,info)
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("jestd=debug,info"));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("jestd=debug,info"));
 
     tracing_subscriber::registry()
         .with(filter)

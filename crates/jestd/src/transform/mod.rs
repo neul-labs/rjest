@@ -6,7 +6,6 @@ use sled::Db;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use tracing::{info, warn};
 use swc_common::comments::SingleThreadedComments;
 use swc_common::sync::Lrc;
 use swc_common::{FileName, Globals, Mark, SourceMap, GLOBALS};
@@ -21,6 +20,7 @@ use swc_ecma_transforms_module::common_js::{self, FeatureFlag};
 use swc_ecma_transforms_module::path::Resolver;
 use swc_ecma_transforms_typescript::strip;
 use swc_ecma_visit::visit_mut_pass;
+use tracing::{info, warn};
 
 /// Size of the in-memory LRU cache for transforms
 const LRU_CACHE_SIZE: usize = 1000;
@@ -212,16 +212,17 @@ impl Transformer {
 
     /// Transform multiple files in parallel, returning results in same order
     pub fn transform_many(&self, paths: &[PathBuf]) -> Vec<Result<TransformResult>> {
-        paths
-            .par_iter()
-            .map(|p| self.transform(p))
-            .collect()
+        paths.par_iter().map(|p| self.transform(p)).collect()
     }
 }
 
 /// Transform a file using native SWC integration
 #[inline]
-fn transform_with_native_swc(path: &Path, source: &str, source_hash: &str) -> Result<TransformResult> {
+fn transform_with_native_swc(
+    path: &Path,
+    source: &str,
+    source_hash: &str,
+) -> Result<TransformResult> {
     let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
     // Fast path: no transform needed for plain JS

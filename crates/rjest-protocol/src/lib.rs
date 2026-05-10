@@ -315,15 +315,26 @@ pub struct HealthResponse {
     pub issues: Vec<String>,
 }
 
+/// Worker lifecycle state
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerState {
+    Spawning,
+    WarmingUp,
+    Idle,
+    Running,
+    Recycling,
+    Terminating,
+    Dead,
+}
+
 /// Health information for a single worker
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerHealth {
     /// Worker index
     pub id: u32,
-    /// Whether the worker is alive
-    pub alive: bool,
-    /// Whether the worker is currently busy
-    pub busy: bool,
+    /// Current lifecycle state
+    pub state: WorkerState,
     /// Number of tests run by this worker
     pub tests_run: u64,
     /// Time since last activity in seconds

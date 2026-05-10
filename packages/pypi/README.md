@@ -17,25 +17,6 @@ npm install -D rjest && npx rjest
 
 The daemon caches SWC transforms, maintains pre-warmed Node workers, and orchestrates parallel test execution. Under the hood it uses nng for low-latency IPC, sled for persistent caches, and native SWC for TypeScript/JSX compilation.
 
-## Installation
-
-```bash
-# npm (recommended for Node projects)
-npm install -D rjest-cli
-
-# Homebrew (macOS/Linux)
-brew tap neul-labs/tap
-brew install rjest
-
-# Cargo (Rust toolchain)
-cargo install rjest
-
-# pip (Python ecosystem)
-pip install rjest-cli
-```
-
-See [CHANGELOG.md](CHANGELOG.md) for release notes.
-
 ## Highlights
 
 - **100× faster warm runs** — 14ms vs 1.4s on typical TypeScript projects

@@ -1,0 +1,10 @@
+LICENSE
+README.md
+pyproject.toml
+rjest/__init__.py
+rjest/cli.py
+rjest.egg-info/PKG-INFO
+rjest.egg-info/SOURCES.txt
+rjest.egg-info/dependency_links.txt
+rjest.egg-info/entry_points.txt
+rjest.egg-info/top_level.txt

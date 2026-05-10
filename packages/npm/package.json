@@ -1,6 +1,6 @@
 {
-  "name": "rjest",
-  "version": "0.1.0",
+  "name": "rjest-cli",
+  "version": "0.1.1",
   "description": "A fast Jest-compatible test runner written in Rust",
   "main": "lib/index.js",
   "bin": {
@@ -22,7 +22,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/dipankarsarkar/rjest"
+    "url": "https://github.com/neul-labs/rjest"
   },
   "engines": {
     "node": ">=16"
@@ -35,5 +35,9 @@
   "cpu": [
     "x64",
     "arm64"
-  ]
+  ],
+  "dependencies": {
+    "extract-zip": "^2.0.1",
+    "tar": "^7.0.0"
+  }
 }

@@ -12,7 +12,7 @@ use crate::rjest_util;
 /// How long to cache discovery results before re-scanning
 const DISCOVERY_CACHE_TTL: Duration = Duration::from_secs(5);
 
-/// Global discovery cache
+// Global discovery cache
 lazy_static::lazy_static! {
     static ref DISCOVERY_CACHE: Arc<RwLock<DiscoveryCache>> = Arc::new(RwLock::new(DiscoveryCache::new()));
 }
@@ -47,11 +47,14 @@ impl DiscoveryCache {
     }
 
     fn set(&mut self, root: PathBuf, test_files: Vec<PathBuf>, config_hash: u64) {
-        self.entries.insert(root, CachedDiscovery {
-            test_files,
-            timestamp: Instant::now(),
-            config_hash,
-        });
+        self.entries.insert(
+            root,
+            CachedDiscovery {
+                test_files,
+                timestamp: Instant::now(),
+                config_hash,
+            },
+        );
     }
 
     fn invalidate(&mut self, root: &Path) {
@@ -76,7 +79,10 @@ impl TestDiscovery {
     pub fn new(config: JestConfig) -> Self {
         // Compute a hash of the config for cache invalidation
         let config_hash = compute_config_hash(&config);
-        Self { config, config_hash }
+        Self {
+            config,
+            config_hash,
+        }
     }
 
     /// Find all test files matching the configuration
@@ -94,7 +100,11 @@ impl TestDiscovery {
 
         // Cache the results
         if let Ok(mut cache) = DISCOVERY_CACHE.write() {
-            cache.set(self.config.root_dir.clone(), test_files.clone(), self.config_hash);
+            cache.set(
+                self.config.root_dir.clone(),
+                test_files.clone(),
+                self.config_hash,
+            );
         }
 
         Ok(test_files)
@@ -190,10 +200,7 @@ impl TestDiscovery {
         let related: Vec<PathBuf> = all_tests
             .into_iter()
             .filter(|test_path| {
-                let test_stem = test_path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("");
+                let test_stem = test_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
 
                 // Remove .test or .spec suffix to get base name
                 let base_name = test_stem
@@ -201,15 +208,15 @@ impl TestDiscovery {
                     .trim_end_matches(".spec");
 
                 source_files.iter().any(|source| {
-                    let source_stem = source
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("");
+                    let source_stem = source.file_stem().and_then(|s| s.to_str()).unwrap_or("");
 
                     source_stem == base_name
                         || test_path
                             .parent()
-                            .map(|p| source.starts_with(p) || p.starts_with(source.parent().unwrap_or(Path::new(""))))
+                            .map(|p| {
+                                source.starts_with(p)
+                                    || p.starts_with(source.parent().unwrap_or(Path::new("")))
+                            })
                             .unwrap_or(false)
                 })
             })
@@ -222,8 +229,8 @@ impl TestDiscovery {
 
 /// Compute a hash of the config for cache invalidation
 fn compute_config_hash(config: &JestConfig) -> u64 {
-    use std::hash::{Hash, Hasher};
     use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
 
     let mut hasher = DefaultHasher::new();
 
@@ -298,7 +305,10 @@ mod tests {
             if entry.file_name().to_string_lossy() == ".hidden" {
                 assert!(is_hidden(&entry), "Hidden file should be detected");
             } else if entry.file_name().to_string_lossy() == "normal.txt" {
-                assert!(!is_hidden(&entry), "Normal file should not be detected as hidden");
+                assert!(
+                    !is_hidden(&entry),
+                    "Normal file should not be detected as hidden"
+                );
             }
         }
     }

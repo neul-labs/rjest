@@ -106,11 +106,7 @@ fn print_failure(path: &str, test: &TestResult) {
 
         // Print stack trace location
         if let Some(ref location) = error.location {
-            println!(
-                "      at {}:{}",
-                location.file,
-                location.line
-            );
+            println!("      at {}:{}", location.file, location.line);
             println!();
         }
     }
@@ -141,14 +137,8 @@ fn print_summary(response: &RunResponse) {
         + response.num_skipped_tests
         + response.num_todo_tests;
 
-    println!(
-        "Test Suites: {}, {} total",
-        suites_status, total_suites
-    );
-    println!(
-        "Tests:       {}, {} total",
-        tests_status, total_tests
-    );
+    println!("Test Suites: {}, {} total", suites_status, total_suites);
+    println!("Tests:       {}, {} total", tests_status, total_tests);
 
     if response.num_skipped_tests > 0 {
         println!("Skipped:     {}", response.num_skipped_tests);

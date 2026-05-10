@@ -1,3 +1,25 @@
+Metadata-Version: 2.4
+Name: rjest
+Version: 0.1.1
+Summary: A fast Jest-compatible test runner written in Rust
+Author-email: Dipankar Sarkar <dipankarsarkar@outlook.com>
+License: MIT
+Project-URL: Homepage, https://github.com/neul-labs/rjest
+Project-URL: Repository, https://github.com/neul-labs/rjest
+Project-URL: Issues, https://github.com/neul-labs/rjest/issues
+Keywords: jest,testing,rust,runner
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Rust
+Classifier: Topic :: Software Development :: Testing
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Dynamic: license-file
+
 # rjest
 
 [![Crates.io](https://img.shields.io/crates/v/jestd.svg)](https://crates.io/crates/jestd)
@@ -16,25 +38,6 @@ npm install -D rjest && npx rjest
 ```
 
 The daemon caches SWC transforms, maintains pre-warmed Node workers, and orchestrates parallel test execution. Under the hood it uses nng for low-latency IPC, sled for persistent caches, and native SWC for TypeScript/JSX compilation.
-
-## Installation
-
-```bash
-# npm (recommended for Node projects)
-npm install -D rjest-cli
-
-# Homebrew (macOS/Linux)
-brew tap neul-labs/tap
-brew install rjest
-
-# Cargo (Rust toolchain)
-cargo install rjest
-
-# pip (Python ecosystem)
-pip install rjest-cli
-```
-
-See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ## Highlights
 

@@ -1,29 +1,56 @@
 use anyhow::{Context, Result};
-use rjest_protocol::{socket_path, Request, Response};
+use rjest_protocol::{socket_path, Request, Response, WorkerState};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
 use crate::client;
 
+const MAX_START_ATTEMPTS: u32 = 50;
+const START_POLL_INTERVAL_MS: u64 = 100;
+const MAX_STOP_ATTEMPTS: u32 = 30;
+const STOP_POLL_INTERVAL_MS: u64 = 100;
+
+/// Daemon manager lifecycle states
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DaemonManagerState {
+    Checking,
+    Starting { attempt: u32 },
+    Stopping { attempt: u32 },
+}
+
 /// Ensure the daemon is running, starting it if necessary
 pub fn ensure_running() -> Result<()> {
-    if client::ping()? {
-        return Ok(());
+    let mut state = DaemonManagerState::Checking;
+
+    loop {
+        state = match state {
+            DaemonManagerState::Checking => {
+                if client::ping()? {
+                    return Ok(());
+                }
+                eprintln!("Starting rjest daemon...");
+                start()?;
+                DaemonManagerState::Starting { attempt: 1 }
+            }
+            DaemonManagerState::Starting { attempt } => {
+                if attempt > MAX_START_ATTEMPTS {
+                    anyhow::bail!("Daemon failed to start within timeout")
+                }
+                thread::sleep(Duration::from_millis(START_POLL_INTERVAL_MS));
+                if client::ping()? {
+                    return Ok(());
+                }
+                DaemonManagerState::Starting {
+                    attempt: attempt + 1,
+                }
+            }
+            // Terminal states that shouldn't be reached in this flow
+            DaemonManagerState::Stopping { .. } => {
+                return Ok(());
+            }
+        };
     }
-
-    eprintln!("Starting rjest daemon...");
-    start()?;
-
-    // Wait for daemon to be ready
-    for _ in 0..50 {
-        thread::sleep(Duration::from_millis(100));
-        if client::ping()? {
-            return Ok(());
-        }
-    }
-
-    anyhow::bail!("Daemon failed to start within timeout")
 }
 
 /// Start the daemon as a background process
@@ -67,9 +94,9 @@ pub fn status() -> Result<()> {
             println!("Projects tracked: {}", status.projects_count);
             println!();
             println!("Cache:");
-            println!("  Transforms: {} ({} bytes)",
-                status.cache_stats.transform_count,
-                status.cache_stats.transform_size_bytes
+            println!(
+                "  Transforms: {} ({} bytes)",
+                status.cache_stats.transform_count, status.cache_stats.transform_size_bytes
             );
             println!("  Graphs: {}", status.cache_stats.graph_count);
             println!("  Hit rate: {:.1}%", status.cache_stats.hit_rate * 100.0);
@@ -92,42 +119,59 @@ pub fn status() -> Result<()> {
 
 /// Stop the daemon
 pub fn stop() -> Result<()> {
-    if !client::ping()? {
-        println!("Daemon is not running");
-        return Ok(());
-    }
+    let mut state = DaemonManagerState::Checking;
 
-    let response = client::send_request(Request::Shutdown)?;
+    loop {
+        state = match state {
+            DaemonManagerState::Checking => {
+                if !client::ping()? {
+                    println!("Daemon is not running");
+                    return Ok(());
+                }
 
-    match response {
-        Response::ShuttingDown => {
-            println!("Daemon stopping...");
+                let response = client::send_request(Request::Shutdown)?;
+                match response {
+                    Response::ShuttingDown => {
+                        println!("Daemon stopping...");
+                        DaemonManagerState::Stopping { attempt: 1 }
+                    }
+                    Response::Error(err) => {
+                        eprintln!("Error stopping daemon: {}", err.message);
+                        return Ok(());
+                    }
+                    _ => {
+                        eprintln!("Unexpected response");
+                        return Ok(());
+                    }
+                }
+            }
+            DaemonManagerState::Stopping { attempt } => {
+                if attempt > MAX_STOP_ATTEMPTS {
+                    // Force remove socket if daemon didn't clean up
+                    let sock = socket_path();
+                    if sock.exists() {
+                        std::fs::remove_file(&sock).ok();
+                    }
+                    println!("Daemon stopped (forced)");
+                    return Ok(());
+                }
 
-            // Wait for socket to disappear
-            let sock = socket_path();
-            for _ in 0..30 {
-                thread::sleep(Duration::from_millis(100));
+                thread::sleep(Duration::from_millis(STOP_POLL_INTERVAL_MS));
+                let sock = socket_path();
                 if !sock.exists() {
                     println!("Daemon stopped");
                     return Ok(());
                 }
+                DaemonManagerState::Stopping {
+                    attempt: attempt + 1,
+                }
             }
-
-            // Force remove socket if daemon didn't clean up
-            if sock.exists() {
-                std::fs::remove_file(&sock).ok();
+            // Terminal states that shouldn't be reached in this flow
+            DaemonManagerState::Starting { .. } => {
+                return Ok(());
             }
-            println!("Daemon stopped");
-        }
-        Response::Error(err) => {
-            eprintln!("Error stopping daemon: {}", err.message);
-        }
-        _ => {
-            eprintln!("Unexpected response");
-        }
+        };
     }
-
-    Ok(())
 }
 
 /// Health check - detailed diagnostics
@@ -163,12 +207,12 @@ pub fn health() -> Result<()> {
                 println!();
                 println!("Workers:");
                 for worker in &health.workers {
-                    let status = if !worker.alive {
-                        "\x1b[31mDEAD\x1b[0m"
-                    } else if worker.busy {
-                        "\x1b[33mBUSY\x1b[0m"
-                    } else {
-                        "\x1b[32mIDLE\x1b[0m"
+                    let status = match worker.state {
+                        WorkerState::Dead => "\x1b[31mDEAD\x1b[0m",
+                        WorkerState::Running => "\x1b[33mBUSY\x1b[0m",
+                        WorkerState::Terminating => "\x1b[33mSTOPPING\x1b[0m",
+                        WorkerState::Spawning | WorkerState::WarmingUp => "\x1b[36mWARMING\x1b[0m",
+                        WorkerState::Idle | WorkerState::Recycling => "\x1b[32mIDLE\x1b[0m",
                     };
                     println!(
                         "  Worker {}: {} - {} tests run, idle {}s",

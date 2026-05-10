@@ -1,7 +1,7 @@
 site_name: rjest Documentation
 site_description: A blazing-fast Jest-compatible test runner written in Rust
 site_url: https://rjest.dev
-repo_url: https://github.com/user/rjest
+repo_url: https://github.com/neul-labs/rjest
 repo_name: rjest
 
 theme:
@@ -69,4 +69,4 @@ nav:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/user/rjest
+      link: https://github.com/neul-labs/rjest

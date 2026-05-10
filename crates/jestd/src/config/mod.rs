@@ -82,22 +82,26 @@ impl JestConfig {
             return; // Already compiled
         }
 
-        let test_regex_compiled: Vec<Regex> = self.test_regex
+        let test_regex_compiled: Vec<Regex> = self
+            .test_regex
             .iter()
             .filter_map(|p| Regex::new(p).ok())
             .collect();
 
-        let test_path_ignore_compiled: Vec<Regex> = self.test_path_ignore_patterns
+        let test_path_ignore_compiled: Vec<Regex> = self
+            .test_path_ignore_patterns
             .iter()
             .filter_map(|p| Regex::new(p).ok())
             .collect();
 
-        let coverage_path_ignore_compiled: Vec<Regex> = self.coverage_path_ignore_patterns
+        let coverage_path_ignore_compiled: Vec<Regex> = self
+            .coverage_path_ignore_patterns
             .iter()
             .filter_map(|p| Regex::new(p).ok())
             .collect();
 
-        let transform_ignore_compiled: Vec<Regex> = self.transform_ignore_patterns
+        let transform_ignore_compiled: Vec<Regex> = self
+            .transform_ignore_patterns
             .iter()
             .filter_map(|p| Regex::new(p).ok())
             .collect();
@@ -161,7 +165,10 @@ impl JestConfig {
     pub async fn load_async(project_root: &Path) -> Result<Self> {
         use tokio::process::Command;
 
-        info!("Loading Jest config asynchronously for {}", project_root.display());
+        info!(
+            "Loading Jest config asynchronously for {}",
+            project_root.display()
+        );
 
         // Find the config loader script
         let loader_script = find_config_loader()?;
@@ -280,8 +287,7 @@ fn find_config_loader() -> Result<PathBuf> {
 
     // Fallback: check relative to CARGO_MANIFEST_DIR (for development)
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let dev_path = PathBuf::from(manifest_dir)
-        .join("../rjest-runtime/src/load-config.js");
+    let dev_path = PathBuf::from(manifest_dir).join("../rjest-runtime/src/load-config.js");
     if dev_path.exists() {
         return Ok(dev_path.canonicalize()?);
     }
@@ -297,22 +303,44 @@ fn num_cpus() -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_glob_match() {
         // Simple patterns using shared rjest_util::glob_match
-        assert!(crate::rjest_util::glob_match("**/*.test.ts", "src/utils.test.ts"));
-        assert!(crate::rjest_util::glob_match("**/*.test.ts", "src/foo/bar.test.ts"));
-        assert!(crate::rjest_util::glob_match("**/__tests__/**/*.ts", "src/__tests__/foo.ts"));
-        assert!(!crate::rjest_util::glob_match("**/*.test.ts", "src/utils.ts"));
+        assert!(crate::rjest_util::glob_match(
+            "**/*.test.ts",
+            "src/utils.test.ts"
+        ));
+        assert!(crate::rjest_util::glob_match(
+            "**/*.test.ts",
+            "src/foo/bar.test.ts"
+        ));
+        assert!(crate::rjest_util::glob_match(
+            "**/__tests__/**/*.ts",
+            "src/__tests__/foo.ts"
+        ));
+        assert!(!crate::rjest_util::glob_match(
+            "**/*.test.ts",
+            "src/utils.ts"
+        ));
 
         // Jest default patterns
         let jest_pattern = "**/?(*.)+(spec|test).[jt]s?(x)";
-        assert!(crate::rjest_util::glob_match(jest_pattern, "src/utils.test.js"));
-        assert!(crate::rjest_util::glob_match(jest_pattern, "src/utils.test.ts"));
-        assert!(crate::rjest_util::glob_match(jest_pattern, "src/utils.spec.js"));
-        assert!(crate::rjest_util::glob_match(jest_pattern, "src/utils.test.tsx"));
+        assert!(crate::rjest_util::glob_match(
+            jest_pattern,
+            "src/utils.test.js"
+        ));
+        assert!(crate::rjest_util::glob_match(
+            jest_pattern,
+            "src/utils.test.ts"
+        ));
+        assert!(crate::rjest_util::glob_match(
+            jest_pattern,
+            "src/utils.spec.js"
+        ));
+        assert!(crate::rjest_util::glob_match(
+            jest_pattern,
+            "src/utils.test.tsx"
+        ));
         assert!(crate::rjest_util::glob_match(jest_pattern, "foo.test.js"));
     }
 }

@@ -1,20 +1,19 @@
 use anyhow::{Context, Result};
 use nng::{Protocol, Socket};
 use rjest_protocol::{
-    ipc_address, socket_path, ErrorCode, ErrorResponse, Request, Response, RunResponse,
-    StatusResponse, TestFileResult as ProtoTestFileResult, TestResult as ProtoTestResult,
-    TestStatus, TestError as ProtoTestError,
-    CacheStats as ProtoCacheStats, WorkerStats as ProtoWorkerStats, RunRequest,
-    WatchStartRequest, WatchPollRequest, WatchStopRequest,
-    WatchStartedResponse, WatchPollResponse, RunFlags,
-    HealthResponse, WorkerHealth,
+    ipc_address, socket_path, CacheStats as ProtoCacheStats, ErrorCode, ErrorResponse,
+    HealthResponse, Request, Response, RunFlags, RunRequest, RunResponse, StatusResponse,
+    TestError as ProtoTestError, TestFileResult as ProtoTestFileResult,
+    TestResult as ProtoTestResult, TestStatus, WatchPollRequest, WatchPollResponse,
+    WatchStartRequest, WatchStartedResponse, WatchStopRequest, WorkerHealth, WorkerState,
+    WorkerStats as ProtoWorkerStats,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tracing::{debug, error, info, instrument, warn, span, Level};
+use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
 use crate::config::JestConfig;
@@ -43,6 +42,15 @@ fn serialize_response(response: &Response) -> Vec<u8> {
     }
 }
 
+/// Watch session lifecycle states
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WatchSessionState {
+    WaitingForChanges,
+    ChangesDetected,
+    RunningTests,
+    Stopped,
+}
+
 /// Active watch session
 struct WatchSession {
     project_root: PathBuf,
@@ -50,17 +58,26 @@ struct WatchSession {
     flags: RunFlags,
     watcher: FileWatcher,
     all_test_files: Vec<PathBuf>,
+    state: WatchSessionState,
+}
+
+/// Daemon lifecycle states
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DaemonLifecycle {
+    Starting,
+    Running,
+    ShuttingDown,
+    Stopped,
 }
 
 /// Daemon state shared across requests
 ///
-/// Uses Relaxed atomic ordering for `running` and `total_tests_run` because:
-/// - `running`: We only need eventual visibility of the shutdown flag
+/// Uses Relaxed atomic ordering for `total_tests_run` because:
 /// - `total_tests_run`: This is an eventually-consistent counter for metrics
 struct DaemonState {
     start_time: Instant,
-    /// Shutdown flag - Relaxed ordering is sufficient since we only need eventual visibility
-    running: AtomicBool,
+    /// Daemon lifecycle state machine
+    lifecycle: Mutex<DaemonLifecycle>,
     /// Total tests run counter - Relaxed ordering is fine for metrics (eventual consistency)
     total_tests_run: AtomicU64,
     /// Cached configs per project root (Arc to avoid cloning on cache hits)
@@ -69,8 +86,8 @@ struct DaemonState {
     cache_dir: PathBuf,
     /// Active watch sessions
     watch_sessions: Mutex<HashMap<String, WatchSession>>,
-    /// Persistent worker pool (keyed by project root for multi-project support)
-    worker_pools: Mutex<HashMap<PathBuf, WorkerPool>>,
+    /// Shared worker pool
+    worker_pool: Mutex<Option<WorkerPool>>,
     /// Worker script path (cached)
     worker_script: Mutex<Option<PathBuf>>,
 }
@@ -83,34 +100,37 @@ impl DaemonState {
 
         Self {
             start_time: Instant::now(),
-            running: AtomicBool::new(true),
+            lifecycle: Mutex::new(DaemonLifecycle::Starting),
             total_tests_run: AtomicU64::new(0),
             configs: Mutex::new(HashMap::new()),
             cache_dir,
             watch_sessions: Mutex::new(HashMap::new()),
-            worker_pools: Mutex::new(HashMap::new()),
+            worker_pool: Mutex::new(None),
             worker_script: Mutex::new(None),
         }
     }
 
     /// Ensure the shared worker pool exists
     fn ensure_pool(&self, max_workers: usize) -> Result<()> {
-        let mut pools = self.worker_pools.lock().map_err(|e| anyhow::anyhow!("Worker pools lock poisoned: {}", e))?;
+        let mut pool = self
+            .worker_pool
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Worker pool lock poisoned: {}", e))?;
 
-        // Use a single shared pool (keyed by empty path)
-        let key = PathBuf::new();
-        if !pools.contains_key(&key) {
+        if pool.is_none() {
             // Get or cache worker script path
             let worker_script = {
-                let mut script = self.worker_script.lock().map_err(|e| anyhow::anyhow!("Worker script lock poisoned: {}", e))?;
+                let mut script = self
+                    .worker_script
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("Worker script lock poisoned: {}", e))?;
                 if script.is_none() {
                     *script = Some(find_worker_script()?);
                 }
                 script.clone().unwrap()
             };
 
-            let pool = WorkerPool::new(max_workers, worker_script)?;
-            pools.insert(key, pool);
+            *pool = Some(WorkerPool::new(max_workers, worker_script)?);
         }
 
         Ok(())
@@ -126,30 +146,30 @@ impl DaemonState {
 
     /// Cleanup idle workers to reduce memory usage
     fn cleanup_idle_workers(&self) {
-        let mut pools = match self.worker_pools.lock() {
-            Ok(pools) => pools,
+        let mut pool = match self.worker_pool.lock() {
+            Ok(pool) => pool,
             Err(e) => {
-                warn!("Failed to lock worker pools for cleanup: {}", e);
+                warn!("Failed to lock worker pool for cleanup: {}", e);
                 return;
             }
         };
-        for pool in pools.values_mut() {
-            pool.cleanup_idle_workers();
+        if let Some(ref mut p) = *pool {
+            p.cleanup_idle_workers();
         }
     }
 
     /// Get health status of all workers across all pools
     fn worker_health(&self) -> Vec<WorkerHealth> {
-        match self.worker_pools.lock() {
-            Ok(pools) => {
-                let mut health = Vec::new();
-                for pool in pools.values() {
-                    health.extend(pool.health());
+        match self.worker_pool.lock() {
+            Ok(pool) => {
+                if let Some(ref p) = *pool {
+                    p.health()
+                } else {
+                    Vec::new()
                 }
-                health
             }
             Err(e) => {
-                warn!("Failed to lock worker pools for health check: {}", e);
+                warn!("Failed to lock worker pool for health check: {}", e);
                 Vec::new()
             }
         }
@@ -161,23 +181,25 @@ impl DaemonState {
         transforms: &[crate::transform::TransformResult],
         config: &WorkerConfig,
     ) -> Vec<Result<crate::worker::TestFileResult>> {
-        let mut pools = match self.worker_pools.lock() {
-            Ok(pools) => pools,
+        let mut pool = match self.worker_pool.lock() {
+            Ok(pool) => pool,
             Err(e) => {
-                return vec![Err(anyhow::anyhow!("Worker pools lock poisoned: {}", e))];
+                return vec![Err(anyhow::anyhow!("Worker pool lock poisoned: {}", e))];
             }
         };
-        let key = PathBuf::new();
 
-        if let Some(pool) = pools.get_mut(&key) {
-            pool.run_tests(transforms, config)
+        if let Some(ref mut p) = *pool {
+            p.run_tests(transforms, config)
         } else {
             vec![Err(anyhow::anyhow!("No worker pool available"))]
         }
     }
 
     fn get_or_load_config(&self, project_root: &Path) -> Result<Arc<JestConfig>> {
-        let mut configs = self.configs.lock().map_err(|e| anyhow::anyhow!("Configs lock poisoned: {}", e))?;
+        let mut configs = self
+            .configs
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Configs lock poisoned: {}", e))?;
 
         if let Some(config) = configs.get(project_root) {
             return Ok(config.clone());
@@ -193,12 +215,18 @@ impl DaemonState {
     async fn get_or_load_config_async(&self, project_root: &Path) -> Result<Arc<JestConfig>> {
         // First, try to get from cache without holding lock during async operations
         let needs_load = {
-            let configs = self.configs.lock().map_err(|e| anyhow::anyhow!("Configs lock poisoned: {}", e))?;
+            let configs = self
+                .configs
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Configs lock poisoned: {}", e))?;
             !configs.contains_key(project_root)
         };
 
         if !needs_load {
-            let configs = self.configs.lock().map_err(|e| anyhow::anyhow!("Configs lock poisoned: {}", e))?;
+            let configs = self
+                .configs
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Configs lock poisoned: {}", e))?;
             if let Some(config) = configs.get(project_root) {
                 return Ok(config.clone());
             }
@@ -209,7 +237,10 @@ impl DaemonState {
         let arc_config = Arc::new(config);
 
         // Store in cache
-        let mut configs = self.configs.lock().map_err(|e| anyhow::anyhow!("Configs lock poisoned: {}", e))?;
+        let mut configs = self
+            .configs
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Configs lock poisoned: {}", e))?;
         configs.insert(project_root.to_path_buf(), arc_config.clone());
         Ok(arc_config)
     }
@@ -224,14 +255,18 @@ fn cleanup_stale_sockets() {
     };
 
     // Only scan /tmp for rjest sockets (not XDG_RUNTIME_DIR which is user-specific)
-    if pattern == std::path::PathBuf::from("/tmp") {
+    if pattern.as_os_str() == "/tmp" {
         if let Ok(entries) = std::fs::read_dir("/tmp") {
             for entry in entries.flatten() {
                 if let Some(name) = entry.file_name().to_str() {
                     if name.starts_with("rjest-") && name.ends_with(".sock") {
                         // Remove stale socket files
                         if let Err(e) = std::fs::remove_file(entry.path()) {
-                            debug!("Failed to remove stale socket {}: {}", entry.path().display(), e);
+                            debug!(
+                                "Failed to remove stale socket {}: {}",
+                                entry.path().display(),
+                                e
+                            );
                         }
                     }
                 }
@@ -271,16 +306,49 @@ pub async fn run() -> Result<()> {
     // Background thread to cleanup idle workers every 30 seconds
     {
         let state_clone = Arc::clone(&state);
-        std::thread::spawn(move || {
-            while state_clone.running.load(Ordering::Relaxed) {
-                std::thread::sleep(std::time::Duration::from_secs(30));
-                state_clone.cleanup_idle_workers();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            let lifecycle = match state_clone.lifecycle.lock() {
+                Ok(l) => *l,
+                Err(_) => break,
+            };
+            if lifecycle != DaemonLifecycle::Running {
+                break;
             }
+            state_clone.cleanup_idle_workers();
         });
     }
 
+    // Transition to Running after socket is bound
+    {
+        let mut lifecycle = state
+            .lifecycle
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lifecycle lock poisoned: {}", e))?;
+        *lifecycle = DaemonLifecycle::Running;
+    }
+    info!("Daemon is running");
+
     // Handle requests
-    while state.running.load(Ordering::Relaxed) {
+    loop {
+        let should_continue = {
+            let lifecycle = match state.lifecycle.lock() {
+                Ok(l) => *l,
+                Err(e) => {
+                    error!("Lifecycle lock poisoned: {}", e);
+                    break;
+                }
+            };
+            matches!(
+                lifecycle,
+                DaemonLifecycle::Starting | DaemonLifecycle::Running
+            )
+        };
+
+        if !should_continue {
+            break;
+        }
+
         match socket.recv() {
             Ok(msg) => {
                 let state_clone = Arc::clone(&state);
@@ -296,7 +364,14 @@ pub async fn run() -> Result<()> {
                 });
             }
             Err(e) => {
-                if state.running.load(Ordering::Relaxed) {
+                let lifecycle = match state.lifecycle.lock() {
+                    Ok(l) => *l,
+                    Err(_) => DaemonLifecycle::Stopped,
+                };
+                if matches!(
+                    lifecycle,
+                    DaemonLifecycle::Starting | DaemonLifecycle::Running
+                ) {
                     error!("Failed to receive message: {}", e);
                 }
             }
@@ -360,8 +435,25 @@ async fn handle_request(msg: &[u8], state: &Arc<DaemonState>) -> Response {
 
         Request::Shutdown => {
             info!("Shutdown requested");
-            state.running.store(false, Ordering::Relaxed);
-            Response::ShuttingDown
+            match state.lifecycle.lock() {
+                Ok(mut lifecycle) => {
+                    if *lifecycle == DaemonLifecycle::Running {
+                        *lifecycle = DaemonLifecycle::ShuttingDown;
+                        Response::ShuttingDown
+                    } else {
+                        Response::Error(ErrorResponse {
+                            code: ErrorCode::InvalidRequest,
+                            message: format!("Cannot shutdown from state {:?}", *lifecycle),
+                            details: None,
+                        })
+                    }
+                }
+                Err(e) => Response::Error(ErrorResponse {
+                    code: ErrorCode::InternalError,
+                    message: format!("Lifecycle lock poisoned: {}", e),
+                    details: None,
+                }),
+            }
         }
 
         Request::Health => {
@@ -401,7 +493,7 @@ async fn handle_request(msg: &[u8], state: &Arc<DaemonState>) -> Response {
 
             // Check for dead workers
             for worker in &workers {
-                if !worker.alive {
+                if worker.state == WorkerState::Dead {
                     issues.push(format!("Worker {} is not alive", worker.id));
                 }
             }
@@ -421,19 +513,17 @@ async fn handle_request(msg: &[u8], state: &Arc<DaemonState>) -> Response {
             })
         }
 
-        Request::Run(run_request) => {
-            match execute_tests(&run_request, state).await {
-                Ok(response) => Response::Run(response),
-                Err(e) => {
-                    error!("Test execution failed: {}", e);
-                    Response::Error(ErrorResponse {
-                        code: ErrorCode::InternalError,
-                        message: e.to_string(),
-                        details: Some(format!("{:?}", e)),
-                    })
-                }
+        Request::Run(run_request) => match execute_tests(&run_request, state).await {
+            Ok(response) => Response::Run(response),
+            Err(e) => {
+                error!("Test execution failed: {}", e);
+                Response::Error(ErrorResponse {
+                    code: ErrorCode::InternalError,
+                    message: e.to_string(),
+                    details: Some(format!("{:?}", e)),
+                })
             }
-        }
+        },
 
         Request::WatchStart(watch_request) => {
             match start_watch_session(&watch_request, state).await {
@@ -449,19 +539,17 @@ async fn handle_request(msg: &[u8], state: &Arc<DaemonState>) -> Response {
             }
         }
 
-        Request::WatchPoll(poll_request) => {
-            match poll_watch_session(&poll_request, state).await {
-                Ok(response) => Response::WatchPoll(response),
-                Err(e) => {
-                    error!("Watch poll failed: {}", e);
-                    Response::Error(ErrorResponse {
-                        code: ErrorCode::InternalError,
-                        message: e.to_string(),
-                        details: Some(format!("{:?}", e)),
-                    })
-                }
+        Request::WatchPoll(poll_request) => match poll_watch_session(&poll_request, state).await {
+            Ok(response) => Response::WatchPoll(response),
+            Err(e) => {
+                error!("Watch poll failed: {}", e);
+                Response::Error(ErrorResponse {
+                    code: ErrorCode::InternalError,
+                    message: e.to_string(),
+                    details: Some(format!("{:?}", e)),
+                })
             }
-        }
+        },
 
         Request::WatchStop(stop_request) => {
             stop_watch_session(&stop_request, state);
@@ -534,14 +622,14 @@ fn get_max_workers(
     if run_in_band {
         1
     } else {
-        max_workers_flag.map(|w| w as usize).unwrap_or_else(|| config_max_workers)
+        max_workers_flag
+            .map(|w| w as usize)
+            .unwrap_or_else(|| config_max_workers)
     }
 }
 
 #[instrument(skip(state), fields(project = %request.project_root))]
 async fn execute_tests(request: &RunRequest, state: &Arc<DaemonState>) -> Result<RunResponse> {
-    let start_time = Instant::now();
-
     // Validate and canonicalize project root
     let project_root = validate_project_root(&request.project_root)?;
 
@@ -560,119 +648,8 @@ async fn execute_tests(request: &RunRequest, state: &Arc<DaemonState>) -> Result
         }
     }
 
-    // Discover test files
-    let discovery = TestDiscovery::new((*config).clone());
-    let test_files = if !request.flags.find_related_tests.is_empty() {
-        let related: Vec<PathBuf> = request.flags.find_related_tests
-            .iter()
-            .map(PathBuf::from)
-            .collect();
-        discovery.find_related_tests(&related)?
-    } else if request.flags.only_changed {
-        // Get changed files from git and find related tests
-        let changed_files = crate::git::get_changed_files(&project_root)?;
-        if changed_files.is_empty() {
-            info!("No changed files detected");
-            vec![]
-        } else {
-            let all_tests = discovery.find_tests_matching(&request.patterns)?;
-            crate::git::find_related_test_files(&changed_files, &all_tests)
-        }
-    } else {
-        discovery.find_tests_matching(&request.patterns)?
-    };
-
-    if test_files.is_empty() {
-        return Ok(RunResponse {
-            success: true,
-            num_passed_suites: 0,
-            num_failed_suites: 0,
-            num_passed_tests: 0,
-            num_failed_tests: 0,
-            num_skipped_tests: 0,
-            num_todo_tests: 0,
-            duration_ms: start_time.elapsed().as_millis() as u64,
-            test_results: vec![],
-            snapshot_summary: None,
-        });
-    }
-
-    info!("Found {} test files", test_files.len());
-
-    // Create transformer
-    let transformer = Transformer::new(&state.cache_dir)?;
-
-    // Transform test files in parallel
-    let (transforms, transform_errors) = transform_test_files(&transformer, &test_files);
-
-    // Create worker config using helper
-    let worker_config = create_worker_config(
-        &config,
-        request.flags.update_snapshots,
-        request.flags.test_name_pattern.clone(),
-    );
-
-    // Get max workers using helper
-    let max_workers = get_max_workers(
-        request.flags.run_in_band,
-        request.flags.max_workers,
-        config.max_workers_count(),
-    );
-    state.ensure_pool(max_workers)?;
-
-    // Run tests using shared pool
-    let results = state.run_tests_with_pool(&transforms, &worker_config);
-
-    // Aggregate results using shared helper
-    let mut aggregated = AggregatedResults::new();
-
-    for result in results {
-        match result {
-            Ok(file_result) => aggregated.add_file_result(file_result),
-            Err(e) => {
-                aggregated.num_failed_suites += 1;
-                warn!("Test file failed: {}", e);
-            }
-        }
-    }
-
-    // Add transform errors as failed test results
-    for (path, error_msg) in transform_errors {
-        aggregated.add_transform_error(path, error_msg);
-    }
-
-    // Update stats
-    let total_tests = aggregated.num_passed_tests + aggregated.num_failed_tests
-        + aggregated.num_skipped_tests + aggregated.num_todo_tests;
-    state.total_tests_run.fetch_add(total_tests as u64, Ordering::Relaxed);
-
-    let success = aggregated.success();
-    let duration_ms = start_time.elapsed().as_millis() as u64;
-
-    info!(
-        "Tests complete: {} passed, {} failed in {}ms",
-        aggregated.num_passed_tests, aggregated.num_failed_tests, duration_ms
-    );
-
-    // Record metrics
-    crate::metrics::record_test_results(aggregated.num_passed_tests as u64, aggregated.num_failed_tests as u64);
-    crate::metrics::record_test_file(duration_ms * 1000); // Convert to microseconds
-
-    // Build snapshot summary if any snapshots were processed
-    let snapshot_summary = aggregated.build_snapshot_summary();
-
-    Ok(RunResponse {
-        success,
-        num_passed_suites: aggregated.num_passed_suites,
-        num_failed_suites: aggregated.num_failed_suites,
-        num_passed_tests: aggregated.num_passed_tests,
-        num_failed_tests: aggregated.num_failed_tests,
-        num_skipped_tests: aggregated.num_skipped_tests,
-        num_todo_tests: aggregated.num_todo_tests,
-        duration_ms,
-        test_results: aggregated.test_results,
-        snapshot_summary,
-    })
+    // Delegate single-project execution
+    execute_single_project_tests(request, state).await
 }
 
 /// Start a new watch session
@@ -720,9 +697,13 @@ async fn start_watch_session(
         flags: request.flags.clone(),
         watcher,
         all_test_files,
+        state: WatchSessionState::WaitingForChanges,
     };
 
-    let mut sessions = state.watch_sessions.lock().map_err(|e| anyhow::anyhow!("Watch sessions lock poisoned: {}", e))?;
+    let mut sessions = state
+        .watch_sessions
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Watch sessions lock poisoned: {}", e))?;
     sessions.insert(session_id.clone(), session);
 
     info!("Watch session {} started", session_id);
@@ -740,26 +721,53 @@ async fn poll_watch_session(
 ) -> Result<WatchPollResponse> {
     let timeout = Duration::from_millis(request.timeout_ms);
 
-    // Get the session data - use a block to limit lock scope
+    // Lock the session, validate state, and wait for changes atomically
     let (project_root, patterns, flags, all_test_files, changed_files) = {
-        let mut sessions = state.watch_sessions.lock().map_err(|e| anyhow::anyhow!("Watch sessions lock poisoned: {}", e))?;
-        let session = match sessions.get(&request.session_id) {
+        let mut sessions = state
+            .watch_sessions
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Watch sessions lock poisoned: {}", e))?;
+        // Remove stale sessions marked as Stopped
+        if let Some(session) = sessions.get(&request.session_id) {
+            if session.state == WatchSessionState::Stopped {
+                sessions.remove(&request.session_id);
+                return Err(anyhow::anyhow!(
+                    "Watch session {} has been stopped",
+                    request.session_id
+                ));
+            }
+        }
+
+        let session = match sessions.get_mut(&request.session_id) {
             Some(session) => session,
             None => {
-                return Err(anyhow::anyhow!("Watch session not found: {}", request.session_id));
+                return Err(anyhow::anyhow!(
+                    "Watch session not found: {}",
+                    request.session_id
+                ));
             }
         };
 
-        // Extract data we need before releasing the lock
-        (
-            session.project_root.clone(),
-            session.patterns.clone(),
-            session.flags.clone(),
-            session.all_test_files.clone(),
-            // Wait for changes with timeout (this is synchronous)
-            session.watcher.wait_for_changes(timeout),
-        )
-        // Lock is released here when sessions goes out of scope
+        // Reject polls on sessions that are not waiting
+        if session.state != WatchSessionState::WaitingForChanges {
+            return Err(anyhow::anyhow!(
+                "Watch session {} is not waiting for changes (state: {:?})",
+                request.session_id,
+                session.state
+            ));
+        }
+
+        let project_root = session.project_root.clone();
+        let patterns = session.patterns.clone();
+        let flags = session.flags.clone();
+        let all_test_files = session.all_test_files.clone();
+        let changed_files = session.watcher.wait_for_changes(timeout);
+
+        if !changed_files.is_empty() {
+            session.state = WatchSessionState::ChangesDetected;
+        }
+
+        (project_root, patterns, flags, all_test_files, changed_files)
     };
 
     if changed_files.is_empty() {
@@ -785,9 +793,13 @@ async fn poll_watch_session(
         let config = state.get_or_load_config(&project_root)?;
         let discovery = TestDiscovery::new((*config).clone());
         if let Ok(new_test_files) = discovery.find_tests_matching(&patterns) {
-            let mut sessions = state.watch_sessions.lock().map_err(|e| anyhow::anyhow!("Watch sessions lock poisoned: {}", e))?;
+            let mut sessions = state
+                .watch_sessions
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Watch sessions lock poisoned: {}", e))?;
             if let Some(session) = sessions.get_mut(&request.session_id) {
                 session.all_test_files = new_test_files;
+                session.state = WatchSessionState::WaitingForChanges;
             }
         }
 
@@ -809,6 +821,17 @@ async fn poll_watch_session(
         .map(|p| p.to_string_lossy().to_string())
         .collect();
 
+    // Transition to RunningTests before executing
+    {
+        let mut sessions = state
+            .watch_sessions
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Watch sessions lock poisoned: {}", e))?;
+        if let Some(session) = sessions.get_mut(&request.session_id) {
+            session.state = WatchSessionState::RunningTests;
+        }
+    }
+
     let run_request = RunRequest {
         project_root: project_root.to_string_lossy().to_string(),
         patterns: test_patterns,
@@ -817,11 +840,23 @@ async fn poll_watch_session(
 
     let run_result = execute_tests(&run_request, state).await?;
 
-    // Update session with new test files after tests complete
+    // Update session with new test files and transition back to WaitingForChanges
     if let Some(files) = new_test_files {
-        let mut sessions = state.watch_sessions.lock().map_err(|e| anyhow::anyhow!("Watch sessions lock poisoned: {}", e))?;
+        let mut sessions = state
+            .watch_sessions
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Watch sessions lock poisoned: {}", e))?;
         if let Some(session) = sessions.get_mut(&request.session_id) {
             session.all_test_files = files;
+            session.state = WatchSessionState::WaitingForChanges;
+        }
+    } else {
+        let mut sessions = state
+            .watch_sessions
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Watch sessions lock poisoned: {}", e))?;
+        if let Some(session) = sessions.get_mut(&request.session_id) {
+            session.state = WatchSessionState::WaitingForChanges;
         }
     }
 
@@ -841,10 +876,22 @@ fn stop_watch_session(request: &WatchStopRequest, state: &Arc<DaemonState>) {
             return;
         }
     };
-    if sessions.remove(&request.session_id).is_some() {
-        info!("Watch session {} stopped", request.session_id);
-    } else {
-        warn!("Watch session {} not found", request.session_id);
+    match sessions.get_mut(&request.session_id) {
+        Some(session) => {
+            if session.state == WatchSessionState::RunningTests {
+                warn!(
+                    "Watch session {} is currently running tests, deferring stop",
+                    request.session_id
+                );
+                session.state = WatchSessionState::Stopped;
+            } else {
+                sessions.remove(&request.session_id);
+                info!("Watch session {} stopped", request.session_id);
+            }
+        }
+        None => {
+            warn!("Watch session {} not found", request.session_id);
+        }
     }
 }
 
@@ -941,7 +988,11 @@ async fn execute_multi_project_tests(
                 all_test_results.extend(result.test_results);
             }
             Err(e) => {
-                warn!("Failed to run tests for project {}: {}", project_path.display(), e);
+                warn!(
+                    "Failed to run tests for project {}: {}",
+                    project_path.display(),
+                    e
+                );
                 total_failed_suites += 1;
             }
         }
@@ -951,8 +1002,11 @@ async fn execute_multi_project_tests(
     let success = total_failed_tests == 0 && total_failed_suites == 0;
 
     // Build snapshot summary if any snapshots were processed
-    let snapshot_summary = if total_snap_added > 0 || total_snap_updated > 0
-        || total_snap_matched > 0 || total_snap_unmatched > 0 {
+    let snapshot_summary = if total_snap_added > 0
+        || total_snap_updated > 0
+        || total_snap_matched > 0
+        || total_snap_unmatched > 0
+    {
         Some(rjest_protocol::SnapshotSummary {
             added: total_snap_added,
             updated: total_snap_updated,
@@ -987,19 +1041,24 @@ async fn execute_multi_project_tests(
 }
 
 /// Execute tests for a single project (extracted from execute_tests)
-async fn execute_single_project_tests(request: &RunRequest, state: &Arc<DaemonState>) -> Result<RunResponse> {
+async fn execute_single_project_tests(
+    request: &RunRequest,
+    state: &Arc<DaemonState>,
+) -> Result<RunResponse> {
     let start_time = Instant::now();
 
     // Validate and canonicalize project root
     let project_root = validate_project_root(&request.project_root)?;
 
-    // Load configuration for this project
-    let config = state.get_or_load_config(&project_root)?;
+    // Load configuration for this project (async to avoid blocking)
+    let config = state.get_or_load_config_async(&project_root).await?;
 
     // Discover test files
     let discovery = TestDiscovery::new((*config).clone());
     let test_files = if !request.flags.find_related_tests.is_empty() {
-        let related: Vec<PathBuf> = request.flags.find_related_tests
+        let related: Vec<PathBuf> = request
+            .flags
+            .find_related_tests
             .iter()
             .map(PathBuf::from)
             .collect();
@@ -1037,22 +1096,7 @@ async fn execute_single_project_tests(request: &RunRequest, state: &Arc<DaemonSt
     let transformer = Transformer::new(&state.cache_dir)?;
 
     // Transform test files in parallel
-    let transform_results = transformer.transform_many(&test_files);
-
-    // Separate successful and failed transforms
-    let mut transforms: Vec<_> = Vec::new();
-    let mut transform_errors: Vec<(PathBuf, String)> = Vec::new();
-
-    for (result, path) in transform_results.into_iter().zip(test_files.iter()) {
-        match result {
-            Ok(t) => transforms.push(t),
-            Err(e) => {
-                let error_msg = format!("Transform failed: {}", e);
-                warn!("Failed to transform {}: {}", path.display(), e);
-                transform_errors.push((path.clone(), error_msg));
-            }
-        }
-    }
+    let (transforms, transform_errors) = transform_test_files(&transformer, &test_files);
 
     // Create worker config using helper
     let worker_config = create_worker_config(
@@ -1090,9 +1134,13 @@ async fn execute_single_project_tests(request: &RunRequest, state: &Arc<DaemonSt
         aggregated.add_transform_error(path, error_msg);
     }
 
-    let total_tests = aggregated.num_passed_tests + aggregated.num_failed_tests
-        + aggregated.num_skipped_tests + aggregated.num_todo_tests;
-    state.total_tests_run.fetch_add(total_tests as u64, Ordering::Relaxed);
+    let total_tests = aggregated.num_passed_tests
+        + aggregated.num_failed_tests
+        + aggregated.num_skipped_tests
+        + aggregated.num_todo_tests;
+    state
+        .total_tests_run
+        .fetch_add(total_tests as u64, Ordering::Relaxed);
 
     let snapshot_summary = aggregated.build_snapshot_summary();
 
@@ -1122,25 +1170,31 @@ fn validate_project_root(project_root: &str) -> Result<PathBuf> {
     // Check for path traversal patterns in the original path
     let path_str = project_root.replace('\\', "/"); // Normalize Windows separators
     if path_str.contains("..") {
-        anyhow::bail!("Project root path contains invalid '..' traversal: {}", project_root);
+        anyhow::bail!(
+            "Project root path contains invalid '..' traversal: {}",
+            project_root
+        );
     }
 
     // Try to canonicalize
     let canonical = path.canonicalize().map_err(|e| {
-        anyhow::anyhow!("Failed to resolve project root path '{}': {}", project_root, e)
+        anyhow::anyhow!(
+            "Failed to resolve project root path '{}': {}",
+            project_root,
+            e
+        )
     })?;
 
     // On Unix, ensure the path doesn't escape to /tmp or system directories
     // This is a basic check - for production use, consider allowinglist-based validation
     #[cfg(unix)]
     {
-        use std::os::unix::fs::MetadataExt;
-        // Get the inode - if it's a symlink pointing outside, this may be an issue
-        if let Ok(metadata) = std::fs::metadata(&canonical) {
-            // Check if it's a symlink that points outside expected directories
-            if std::fs::symlink_metadata(&canonical).map(|m| m.file_type().is_symlink()).unwrap_or(false) {
-                warn!("Project root is a symlink: {}", canonical.display());
-            }
+        // Check if it's a symlink that points outside expected directories
+        if std::fs::symlink_metadata(&canonical)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            warn!("Project root is a symlink: {}", canonical.display());
         }
     }
 
@@ -1266,7 +1320,11 @@ impl AggregatedResults {
 
     /// Build the final snapshot summary if any snapshots were processed
     fn build_snapshot_summary(&self) -> Option<rjest_protocol::SnapshotSummary> {
-        if self.snap_added > 0 || self.snap_updated > 0 || self.snap_matched > 0 || self.snap_unmatched > 0 {
+        if self.snap_added > 0
+            || self.snap_updated > 0
+            || self.snap_matched > 0
+            || self.snap_unmatched > 0
+        {
             Some(rjest_protocol::SnapshotSummary {
                 added: self.snap_added,
                 updated: self.snap_updated,
@@ -1309,9 +1367,9 @@ fn get_memory_usage() -> Option<u64> {
         let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
         if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) } == 0 {
             // On macOS, ru_maxrss is in kilobytes
-            return Some(usage.ru_maxrss as u64 * 1024);
+            Some(usage.ru_maxrss as u64 * 1024)
         } else {
-            return None;
+            None
         }
     }
 
@@ -1337,7 +1395,10 @@ mod tests {
         }
     }
 
-    fn create_test_file_result(passed: bool, tests: Vec<TestResult>) -> crate::worker::TestFileResult {
+    fn create_test_file_result(
+        passed: bool,
+        tests: Vec<TestResult>,
+    ) -> crate::worker::TestFileResult {
         crate::worker::TestFileResult {
             path: "test/example.test.ts".to_string(),
             passed,
@@ -1539,7 +1600,8 @@ mod tests {
     fn test_daemon_state_new() {
         let state = DaemonState::new();
         assert!(state.start_time.elapsed().as_millis() < 100); // Just created
-        assert!(state.running.load(Ordering::Relaxed));
+        let lifecycle = state.lifecycle.lock().unwrap();
+        assert_eq!(*lifecycle, DaemonLifecycle::Starting);
     }
 
     #[test]
@@ -1568,7 +1630,6 @@ mod tests {
     #[test]
     fn test_validate_project_root_valid_path() {
         // Valid path should work (using a temp directory)
-        use std::fs;
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();

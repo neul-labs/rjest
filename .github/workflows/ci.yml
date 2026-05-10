@@ -24,7 +24,7 @@ jobs:
         with:
           components: rustfmt, clippy
       - name: Check formatting
-        run: cargo fmt --check
+        run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --all-features --all-targets -- -D warnings
       - name: Check docs
@@ -50,9 +50,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
       - name: Run tests
-        run: cargo test --all-features --all-targets
+        run: cargo test --all-features --workspace --lib --bins
       - name: Run tests (release mode)
-        run: cargo test --release --all-features
+        run: cargo test --release --all-features --workspace --lib --bins
 
   build:
     name: Build
@@ -89,11 +89,14 @@ jobs:
           # Get the latest tag
           latest_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
 
+          # Strip 'v' prefix from tag for comparison
+          latest_version="${latest_tag#v}"
+
           if [ -z "$latest_tag" ]; then
             echo "version_changed=true" >> $GITHUB_OUTPUT
             echo "new_version=$current_version" >> $GITHUB_OUTPUT
             echo "No previous tag found, will create tag for version $current_version"
-          elif [ "$current_version" != "$latest_tag" ]; then
+          elif [ "$current_version" != "$latest_version" ]; then
             echo "version_changed=true" >> $GITHUB_OUTPUT
             echo "new_version=$current_version" >> $GITHUB_OUTPUT
             echo "Version changed from $latest_tag to $current_version"
@@ -147,5 +150,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: binary-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/jest
+          path: |
+            target/${{ matrix.target }}/release/jest
+            target/${{ matrix.target }}/release/jestd
           retention-days: 1

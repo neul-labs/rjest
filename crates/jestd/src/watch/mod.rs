@@ -34,16 +34,22 @@ impl FileWatcher {
 
     /// Watch a directory recursively
     pub fn watch(&mut self, path: &Path) -> Result<()> {
-        let path = path.canonicalize().with_context(|| format!("Failed to canonicalize path: {}", path.display()))?;
+        let path = path
+            .canonicalize()
+            .with_context(|| format!("Failed to canonicalize path: {}", path.display()))?;
         let mut watched = match self.watched_paths.lock() {
             Ok(watched) => watched,
             Err(e) => {
-                return Err(anyhow::anyhow!("Failed to lock watched_paths for watching: {}", e));
+                return Err(anyhow::anyhow!(
+                    "Failed to lock watched_paths for watching: {}",
+                    e
+                ));
             }
         };
 
         if !watched.contains(&path) {
-            self.watcher.watch(&path, RecursiveMode::Recursive)
+            self.watcher
+                .watch(&path, RecursiveMode::Recursive)
                 .with_context(|| format!("Failed to watch path: {}", path.display()))?;
             watched.insert(path.clone());
             info!("Watching {}", path.display());
@@ -54,16 +60,22 @@ impl FileWatcher {
 
     /// Stop watching a directory
     pub fn unwatch(&mut self, path: &Path) -> Result<()> {
-        let path = path.canonicalize().with_context(|| format!("Failed to canonicalize path: {}", path.display()))?;
+        let path = path
+            .canonicalize()
+            .with_context(|| format!("Failed to canonicalize path: {}", path.display()))?;
         let mut watched = match self.watched_paths.lock() {
             Ok(watched) => watched,
             Err(e) => {
-                return Err(anyhow::anyhow!("Failed to lock watched_paths for unwatching: {}", e));
+                return Err(anyhow::anyhow!(
+                    "Failed to lock watched_paths for unwatching: {}",
+                    e
+                ));
             }
         };
 
         if watched.remove(&path) {
-            self.watcher.unwatch(&path)
+            self.watcher
+                .unwatch(&path)
                 .with_context(|| format!("Failed to unwatch path: {}", path.display()))?;
             info!("Stopped watching {}", path.display());
         }
@@ -134,10 +146,7 @@ fn is_source_file(path: &Path) -> bool {
 }
 
 /// Determine which test files need to be re-run based on changed files
-pub fn get_affected_tests(
-    changed_files: &[PathBuf],
-    all_test_files: &[PathBuf],
-) -> Vec<PathBuf> {
+pub fn get_affected_tests(changed_files: &[PathBuf], all_test_files: &[PathBuf]) -> Vec<PathBuf> {
     let mut affected = HashSet::new();
 
     for changed in changed_files {
@@ -151,10 +160,7 @@ pub fn get_affected_tests(
 
         // Find test files that might test this source file
         for test_file in all_test_files {
-            let test_stem = test_file
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("");
+            let test_stem = test_file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
 
             // Remove .test or .spec suffix
             let base_name = test_stem
@@ -178,10 +184,9 @@ pub fn get_affected_tests(
                 // Test in __tests__ subdirectory
                 if test_parent.ends_with("__tests__")
                     && test_parent.parent() == Some(changed_parent)
+                    && base_name == changed_stem
                 {
-                    if base_name == changed_stem {
-                        affected.insert(test_file.clone());
-                    }
+                    affected.insert(test_file.clone());
                 }
             }
         }

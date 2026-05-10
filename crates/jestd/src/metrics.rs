@@ -144,7 +144,8 @@ pub fn get() -> &'static Metrics {
 pub fn record_test_file(duration_us: u64) {
     let m = get();
     m.total_test_files.fetch_add(1, Ordering::Relaxed);
-    m.total_test_time_us.fetch_add(duration_us, Ordering::Relaxed);
+    m.total_test_time_us
+        .fetch_add(duration_us, Ordering::Relaxed);
 }
 
 /// Record individual test results
@@ -168,7 +169,8 @@ pub fn record_cache_miss() {
 /// Record a transform operation
 pub fn record_transform(duration_us: u64, hit: bool) {
     let m = get();
-    m.total_transform_time_us.fetch_add(duration_us, Ordering::Relaxed);
+    m.total_transform_time_us
+        .fetch_add(duration_us, Ordering::Relaxed);
     if hit {
         m.cache_hits.fetch_add(1, Ordering::Relaxed);
     } else {

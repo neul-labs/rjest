@@ -43,14 +43,14 @@ pub fn get_changed_files(project_root: &Path) -> Result<Vec<PathBuf>> {
     changed_files.extend(since_base);
 
     // Filter to only files within project_root
-    let project_root_canonical = project_root.canonicalize().unwrap_or(project_root.to_path_buf());
-    changed_files.retain(|f| {
-        match f.canonicalize() {
-            Ok(canonical) => canonical.starts_with(&project_root_canonical),
-            Err(e) => {
-                warn!("Failed to canonicalize changed file {}: {}", f.display(), e);
-                false
-            }
+    let project_root_canonical = project_root
+        .canonicalize()
+        .unwrap_or(project_root.to_path_buf());
+    changed_files.retain(|f| match f.canonicalize() {
+        Ok(canonical) => canonical.starts_with(&project_root_canonical),
+        Err(e) => {
+            warn!("Failed to canonicalize changed file {}: {}", f.display(), e);
+            false
         }
     });
 
@@ -70,7 +70,10 @@ pub fn get_changed_files(project_root: &Path) -> Result<Vec<PathBuf>> {
 fn get_uncommitted_changes(project_root: &Path) -> Result<Vec<PathBuf>> {
     // Validate the path before passing to Command
     if !project_root.exists() || !project_root.is_dir() {
-        warn!("Invalid project root for git command: {}", project_root.display());
+        warn!(
+            "Invalid project root for git command: {}",
+            project_root.display()
+        );
         return Ok(vec![]);
     }
 
@@ -112,7 +115,10 @@ fn get_uncommitted_changes(project_root: &Path) -> Result<Vec<PathBuf>> {
 fn get_changes_since_merge_base(project_root: &Path) -> Result<Vec<PathBuf>> {
     // Validate the path before passing to Command
     if !project_root.exists() || !project_root.is_dir() {
-        warn!("Invalid project root for git command: {}", project_root.display());
+        warn!(
+            "Invalid project root for git command: {}",
+            project_root.display()
+        );
         return Ok(vec![]);
     }
 
@@ -138,9 +144,7 @@ fn get_changes_since_merge_base(project_root: &Path) -> Result<Vec<PathBuf>> {
             .output();
 
         match output {
-            Ok(o) if o.status.success() => {
-                String::from_utf8_lossy(&o.stdout).trim().to_string()
-            }
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
             _ => return Ok(vec![]),
         }
     };
@@ -248,10 +252,7 @@ pub fn find_related_test_files(
                 continue;
             }
 
-            let changed_stem = changed
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("");
+            let changed_stem = changed.file_stem().and_then(|s| s.to_str()).unwrap_or("");
 
             // Check if names match (foo.ts -> foo.test.ts)
             if changed_stem == test_stem {
@@ -339,9 +340,7 @@ mod tests {
 
     #[test]
     fn test_find_related_test_files_only_source_files() {
-        let changed = vec![
-            PathBuf::from("/project/src/utils.ts"),
-        ];
+        let changed = vec![PathBuf::from("/project/src/utils.ts")];
         let tests = vec![];
         let related = find_related_test_files(&changed, &tests);
         assert!(related.is_empty());
@@ -350,9 +349,7 @@ mod tests {
     #[test]
     fn test_find_related_test_files_only_tests() {
         let changed = vec![];
-        let tests = vec![
-            PathBuf::from("/project/src/utils.test.ts"),
-        ];
+        let tests = vec![PathBuf::from("/project/src/utils.test.ts")];
         let related = find_related_test_files(&changed, &tests);
         assert!(related.is_empty());
     }

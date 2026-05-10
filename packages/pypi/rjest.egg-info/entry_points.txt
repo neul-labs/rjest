@@ -1,0 +1,3 @@
+[console_scripts]
+jest = rjest.cli:main
+rjest = rjest.cli:main

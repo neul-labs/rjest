@@ -70,7 +70,7 @@ fn run_tests(args: Args) -> Result<()> {
 
 fn run_watch_mode(args: Args) -> Result<()> {
     use rjest_protocol::{
-        Request, Response, WatchStartRequest, WatchPollRequest, WatchStopRequest,
+        Request, Response, WatchPollRequest, WatchStartRequest, WatchStopRequest,
     };
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;

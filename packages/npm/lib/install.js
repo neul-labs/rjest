@@ -6,7 +6,7 @@ const { execSync } = require('child_process');
 const os = require('os');
 const { pipeline } = require('stream/promises');
 
-const DOWNLOAD_BASE = process.env.RJEST_DOWNLOAD_URL || 'https://github.com/dipankarsarkar/rjest/releases/download';
+const DOWNLOAD_BASE = process.env.RJEST_DOWNLOAD_URL || 'https://github.com/neul-labs/rjest/releases/download';
 
 function getPlatformInfo() {
   const platform = os.platform();
@@ -47,7 +47,7 @@ function getPlatformInfo() {
 
 function getAssetUrl(version, osName, archName) {
   const ext = osName === 'windows' ? '.zip' : '.tar.gz';
-  const name = `jest-${osName}-${archName}${ext}`;
+  const name = `rjest-${osName}-${archName}${ext}`;
   return `${DOWNLOAD_BASE}/v${version}/${name}`;
 }
 
