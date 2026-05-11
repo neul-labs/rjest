@@ -4,3 +4,24 @@ memista.*
 .vscode
 *.env
 node_modules/
+
+# Python build artifacts (packages/pypi)
+dist/
+build/
+*.egg-info/
+.eggs/
+__pycache__/
+*.pyc
+*.pyo
+
+# npm prebuilds generated during publish
+packages/npm/prebuilds/
+packages/npm/bin/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+*.swp
+*.swo

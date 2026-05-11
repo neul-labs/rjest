@@ -9,11 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Explicit state machines for worker lifecycle, daemon lifecycle, watch sessions, and CLI daemon management.
-- Committed PyPI package (`packages/rjest-python`) for `pip install rjest`.
+- Committed PyPI package (`packages/pypi`) for `pip install rjest-cli`.
 - `CHANGELOG.md` to track releases.
+- PyPI publishing via OIDC Trusted Publishing in GitHub Actions.
 
 ### Changed
-- Updated npm package (`packages/rjest`) to version 0.1.1 with correct repository URLs and missing dependencies.
+- Updated npm package (`packages/npm`) to `rjest-cli` v0.1.1 with correct repository URLs and missing dependencies.
 - Updated documentation site with correct repository URLs and expanded installation instructions.
 - Homebrew tap README now lists `rjest` as an available formula.
 
