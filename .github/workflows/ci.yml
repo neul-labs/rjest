@@ -127,14 +127,19 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            cross: false
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
+            cross: true
           - os: macos-latest
             target: x86_64-apple-darwin
+            cross: false
           - os: macos-latest
             target: aarch64-apple-darwin
+            cross: false
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            cross: false
     steps:
       - uses: actions/checkout@v4
 
@@ -143,8 +148,17 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Install cross (for cross-compilation)
+        if: matrix.cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
       - name: Build
+        if: ${{ !matrix.cross }}
         run: cargo build --release --all-features --target ${{ matrix.target }}
+
+      - name: Build (cross)
+        if: matrix.cross
+        run: cross build --release --all-features --target ${{ matrix.target }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
