@@ -1015,7 +1015,7 @@ checksum = "4a5f13b858c8d314ee3e8f639011f7ccefe71f97f96e50151fb991f267928e2c"
 
 [[package]]
 name = "jestd"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1630,7 +1630,7 @@ checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 
 [[package]]
 name = "rjest-bench"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "criterion",
@@ -1640,7 +1640,7 @@ dependencies = [
 
 [[package]]
 name = "rjest-cli"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -1657,7 +1657,7 @@ dependencies = [
 
 [[package]]
 name = "rjest-protocol"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "libc",
  "serde",
