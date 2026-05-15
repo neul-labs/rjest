@@ -1,12 +1,12 @@
 # rjest-install
 
-[![PyPI version](https://img.shields.io/pypi/v/rjest-install.svg)](https://pypi.org/project/rjest-install/)
+[![npm version](https://img.shields.io/npm/v/rjest-install.svg)](https://www.npmjs.com/package/rjest-install)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/neul-labs/rjest/actions/workflows/ci.yml/badge.svg)](https://github.com/neul-labs/rjest/actions/workflows/ci.yml)
 
-> **A blazing-fast, drop-in replacement for Jest.** Install via pip and run your tests in ~14ms on warm runs — 100x faster than standard Jest.
+> **A blazing-fast, drop-in replacement for Jest.** Install via npm and run your tests in ~14ms on warm runs — 100x faster than standard Jest.
 
-`rjest-install` is the official PyPI distribution of **rjest**, a Rust-based test runner that keeps a background daemon (`jestd`) alive across invocations. It reads your existing `jest.config.*` files with zero configuration changes and supports the same CLI flags you already use (`--watch`, `--coverage`, `--runInBand`, `--testNamePattern`, `--json`, `--machine`).
+`rjest-install` is the official npm distribution of **rjest**, a Rust-based test runner that keeps a background daemon (`jestd`) alive across invocations. It reads your existing `jest.config.*` files with zero configuration changes and supports the same CLI flags you already use (`--watch`, `--coverage`, `--runInBand`, `--testNamePattern`, `--json`, `--machine`).
 
 ## Why rjest?
 
@@ -19,29 +19,29 @@
 ## Installation
 
 ```bash
-pip install rjest-install
+npm install -D rjest-install
 ```
 
-Requires Python 3.8+ and a Rust binary (downloaded automatically on first run, or install via cargo / Homebrew).
+Requires Node.js 16+ and a Rust binary (downloaded automatically on first run).
 
 ## Quick Start
 
 ```bash
 # Run all tests (daemon starts automatically)
-jest
+npx rjest
 
 # Watch mode
-jest --watch
+npx rjest --watch
 
 # Coverage
-jest --coverage
+npx rjest --coverage
 
 # Filter by test name
-jest --testNamePattern="add"
+npx rjest --testNamePattern="add"
 
 # Structured JSON output for CI / AI agents
-jest --json
-jest --machine
+npx rjest --json
+npx rjest --machine
 ```
 
 ## How It Works
@@ -71,19 +71,18 @@ jest --machine
 
 ```bash
 # Check if the daemon is running
-jest --daemon-status
+npx rjest --daemon-status
 
 # Stop the daemon (caches persist on disk)
-jest --daemon-stop
+npx rjest --daemon-stop
 
 # Force a cold restart
-jest --daemon-restart
+npx rjest --daemon-restart
 ```
 
 ## Compatibility
 
-- **Python**: 3.8+
-- **Node.js**: 16+ (for running tests)
+- **Node.js**: 16+
 - **Platforms**: macOS (Intel & Apple Silicon), Linux (x86_64 & aarch64), Windows (x86_64)
 - **Config files**: `jest.config.js`, `jest.config.ts`, `jest.config.mjs`, `package.json`
 - **Matchers**: `toBe`, `toEqual`, `toThrow`, `toHaveBeenCalled`, `resolves`, `rejects`, etc.
@@ -102,17 +101,11 @@ See the [compatibility matrix](https://github.com/neul-labs/rjest/blob/main/docs
 
 ```bash
 # Fast, structured output for automated workflows
-jest --onlyChanged --machine
+npx rjest --onlyChanged --machine
 
 # Filter by test name pattern
-jest --testNamePattern="authentication" --json
+npx rjest --testNamePattern="authentication" --json
 ```
-
-## Other Installation Methods
-
-- **npm**: `npm install -D rjest-install`
-- **Homebrew**: `brew tap neul-labs/tap && brew install rjest`
-- **Cargo**: `cargo install rjest`
 
 ## Documentation
 
