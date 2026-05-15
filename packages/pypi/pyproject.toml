@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rjest-install"
-version = "0.1.1"
+version = "0.1.2"
 description = "A fast Jest-compatible test runner written in Rust"
 readme = "README.md"
 license = {text = "MIT"}
