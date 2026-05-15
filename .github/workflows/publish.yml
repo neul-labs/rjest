@@ -250,7 +250,6 @@ jobs:
         with:
           pattern: binary-*
           path: ./packages/npm/prebuilds
-          merge-multiple: true
 
       - name: Prepare prebuilds
         working-directory: ./packages/npm/prebuilds
