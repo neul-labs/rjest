@@ -1358,7 +1358,7 @@ fn get_memory_usage() -> Option<u64> {
                 }
             }
         }
-        return None;
+        None
     }
 
     // On macOS, use getrusage
