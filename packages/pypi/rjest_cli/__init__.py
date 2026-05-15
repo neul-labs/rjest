@@ -1,2 +1,2 @@
 """rjest-cli - A fast Jest-compatible test runner written in Rust"""
-__version__ = "0.1.2"
+__version__ = "0.1.3"

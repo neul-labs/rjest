@@ -1,6 +1,6 @@
 {
   "name": "rjest-install",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "A fast Jest-compatible test runner written in Rust",
   "main": "lib/index.js",
   "bin": {
