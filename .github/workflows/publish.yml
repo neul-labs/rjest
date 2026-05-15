@@ -7,7 +7,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-C target-feature=+crt-static"
 
 permissions:
   contents: read
@@ -39,17 +38,23 @@ jobs:
           fi
           echo "version=$cargo_version" >> $GITHUB_OUTPUT
 
-  # Publish to crates.io
+  # Publish to crates.io using OIDC Trusted Publishing
   publish-cargo:
     name: Publish to crates.io
     runs-on: ubuntu-latest
     needs: check-version
+    environment: release
+    permissions:
+      id-token: write
     steps:
       - uses: actions/checkout@v4
+      - name: Authenticate with crates.io
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
       - name: Publish to crates.io
-        run: cargo publish --token ${{ secrets.CRATES_IO_TOKEN }}
+        run: cargo publish
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
   # Build multi-platform binaries
   build-binaries:
@@ -101,10 +106,14 @@ jobs:
 
       - name: Build binary (native)
         if: ${{ !matrix.cross }}
+        env:
+          RUSTFLAGS: "-C target-feature=+crt-static"
         run: cargo build --release --all-features --target ${{ matrix.target }}
 
       - name: Build binary (cross)
         if: matrix.cross
+        env:
+          RUSTFLAGS: "-C target-feature=+crt-static"
         run: cross build --release --all-features --target ${{ matrix.target }}
 
       - name: Prepare binaries for upload
