@@ -125,31 +125,28 @@ fn run_watch_mode(args: Args) -> Result<()> {
 
         let response = client.send_request(Request::WatchPoll(poll_request))?;
 
-        match response {
-            Response::WatchPoll(poll_response) => {
-                if poll_response.has_changes {
-                    if !poll_response.changed_files.is_empty() {
-                        eprintln!("\n\x1b[2m--- File changes detected ---\x1b[0m");
-                        for file in &poll_response.changed_files {
-                            eprintln!("  {}", file);
-                        }
-                    }
-
-                    if let Some(run_result) = poll_response.run_result {
-                        eprintln!();
-                        output::render(&run_result, &args)?;
-                        if run_result.success {
-                            eprintln!("\nWatching for changes...");
-                        } else {
-                            eprintln!("\nTests failed. Watching for changes...");
-                        }
-                    }
+        if let Response::WatchPoll(poll_response) = response {
+            if !poll_response.has_changes {
+                continue;
+            }
+            if !poll_response.changed_files.is_empty() {
+                eprintln!("\n\x1b[2m--- File changes detected ---\x1b[0m");
+                for file in &poll_response.changed_files {
+                    eprintln!("  {}", file);
                 }
             }
-            Response::Error(err) => {
-                eprintln!("Watch error: {}", err.message);
+
+            if let Some(run_result) = poll_response.run_result {
+                eprintln!();
+                output::render(&run_result, &args)?;
+                if run_result.success {
+                    eprintln!("\nWatching for changes...");
+                } else {
+                    eprintln!("\nTests failed. Watching for changes...");
+                }
             }
-            _ => {}
+        } else if let Response::Error(err) = response {
+            eprintln!("Watch error: {}", err.message);
         }
     }
 

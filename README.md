@@ -1,29 +1,23 @@
 # rjest
 
 [![Crates.io](https://img.shields.io/crates/v/jestd.svg)](https://crates.io/crates/jestd)
-[![Documentation](https://img.shields.io/badge/docs-neullabs.com-blue)](https://docs.neullabs.com/rjest)
+[![npm](https://img.shields.io/npm/v/rjest-install.svg)](https://www.npmjs.com/package/rjest-install)
+[![PyPI](https://img.shields.io/pypi/v/rjest-install.svg)](https://pypi.org/project/rjest-install/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/neul-labs/rjest/actions/workflows/ci.yml/badge.svg)](https://github.com/neul-labs/rjest/actions/workflows/ci.yml)
+[![Documentation](https://img.shields.io/badge/docs-neullabs.com-blue)](https://docs.neullabs.com/rjest)
 
-**A blazing-fast Jest-compatible test runner. 100× faster warm runs. Zero config changes.**
+> **A blazing-fast, drop-in replacement for Jest.** Warm runs complete in ~14ms — **100x faster** than standard Jest. Zero configuration changes required.
 
----
-
-`rjest` is a drop-in replacement for Jest that keeps a Rust daemon running in the background. Your tests return in **~14 milliseconds** instead of seconds. No configuration changes needed—just install and run.
-
-```bash
-npm install -D rjest && npx rjest
-```
-
-The daemon caches SWC transforms, maintains pre-warmed Node workers, and orchestrates parallel test execution. Under the hood it uses nng for low-latency IPC, sled for persistent caches, and native SWC for TypeScript/JSX compilation.
+`rjest` keeps a Rust daemon (`jestd`) running in the background, caching SWC transforms and pre-warming Node.js workers across test invocations. It reads your existing `jest.config.*` files with **zero config changes** and supports the same CLI flags you already use: `--watch`, `--coverage`, `--runInBand`, `--testNamePattern`, `--json`, `--machine`.
 
 ## Installation
 
 ```bash
-# npm (recommended for Node projects)
+# npm (recommended for Node.js projects)
 npm install -D rjest-install
 
-# Homebrew (macOS/Linux)
+# Homebrew (macOS / Linux)
 brew tap neul-labs/tap
 brew install rjest
 
@@ -36,174 +30,114 @@ pip install rjest-install
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
-## Highlights
-
-- **100× faster warm runs** — 14ms vs 1.4s on typical TypeScript projects
-- **Zero config** — reads your existing `jest.config.*` files
-- **Drop-in replacement** — same CLI flags, same test syntax, same snapshots
-- **Built for AI agents** — structured JSON output, instant feedback loops
-- **Persistent caching** — transforms survive restarts, no rebuild needed
-
-## Why it exists
-
-- Traditional Jest startup repeats the same expensive work (loading Node, parsing config, crawling the filesystem) every time an agent or developer runs `npm test`.
-- TypeScript and JSX need to be transformed afresh on each invocation when using Babel or `ts-jest`, even if no files changed.
-- Jest starts and tears down isolated workers for every test file, reinitializing globals, fake timers, and environments needlessly.
-- Pretty watch UIs are nice for humans but add overhead when the caller is an automated agent that only needs structured results.
-
-`rjest` amortizes all of that cost by keeping a daemon in memory and reusing as much work as possible between test runs.
-
-## Architecture at a glance
-
-1. **Rust daemon (`jestd`)**  
-   - Parses Jest config once, builds a dependency graph, and watches the filesystem for edits.  
-   - Uses SWC to compile TypeScript/JSX and caches the content-hash → compiled-code mapping on disk (via `sled`) and in memory.  
-   - Maintains pools of warm Node workers and orchestrates test execution across them.  
-   - Streams structured test results (JSON with file/name/duration/error data) back to callers over `async-nng`.
-2. **CLI shim (`jest`)**
-   - Drop-in replacement for the Jest CLI; supports common flags like patterns, `--runInBand`, `--watch`, `--coverage`, `--bail`, `--maxWorkers`, `--testNamePattern`, and `--json`.
-   - Starts the daemon on demand, forwards every invocation as an RPC using `async-nng`, and renders Jest-style output (human-readable or JSON).
-   - Can fall back to upstream Jest when a requested feature is not yet supported.
-3. **Node-based workers**  
-   - Persistent worker processes stay alive across runs, preload a Jest-like runtime, and execute SWC output directly.  
-   - Provide familiar globals (`test`, `expect`, fake timers, `jest.fn`, etc.) by reusing Jest runtime libraries or compatible reimplementations.  
-   - Avoid re-running Babel/`ts-jest` by consuming cached transforms supplied by the daemon, with task distribution coordinated by `ryv`.
-
-## Compatibility goals
-
-- **CLI & UX:** Mirror the standard Jest CLI for the most common workflows. Unsupported flags emit helpful warnings, and a fallback mode can run upstream Jest in a pinch.
-- **Configuration:** Load project configs (package.json, `jest.config.*`, multi-project setups) through Node once, serialize them to JSON, and feed the resolved values to the daemon. Respect `testMatch`, `testRegex`, `roots`, `moduleNameMapper`, `modulePaths`, and other high-signal fields out of the box.
-- **Module loading & mocking:** Execute in Node so existing modules, mocks, and runtime assumptions just work. Focus first on manual `jest.mock()` flows, `setupFiles`, `setupFilesAfterEnv`, and CommonJS/ESM interop; expand to advanced automocking later.
-- **Snapshots & coverage:** Keep Jest’s snapshot file format and matcher APIs. Instrument coverage via SWC → Istanbul-compatible reports (text, lcov, JSON).
-- **Reporting:** Offer a machine-friendly `--json`/`--machine` flag for AI agents while preserving human-readable output for developers.
-
-## Getting started
+## Quick Start
 
 ```bash
-# Install as a dev dependency
-npm install -D rjest
-
-# Or use npx directly
+# Run all tests — daemon starts automatically on first use
 npx rjest
 
-# Run your tests (same commands as Jest)
-npx rjest
-npx rjest src/utils.test.ts
+# Watch mode
 npx rjest --watch
+
+# Coverage
 npx rjest --coverage
 
-# Filter tests by name pattern
+# Filter by test name
 npx rjest --testNamePattern="add"
-npx rjest -t "Math"
+
+# Structured JSON / machine output for CI & AI agents
+npx rjest --json
+npx rjest --machine
 ```
 
-The daemon starts automatically on first run and stays alive to accelerate subsequent invocations. No configuration changes required—`rjest` reads your existing `jest.config.*` files.
+## Why rjest?
 
-### Daemon management
+| Metric | rjest | Jest | Speedup |
+| --- | --- | --- | --- |
+| Cold start | 1.9s | 1.4s | 0.7x |
+| **Warm run** | **~14ms** | 1.4s | **~100x** |
+
+- **100x faster warm runs** — amortized config parsing, transform caching, and worker pooling
+- **Zero config** — reads `jest.config.js`, `jest.config.ts`, or `package.json` Jest settings automatically
+- **Drop-in replacement** — same CLI flags, test syntax, matchers, snapshots, and coverage
+- **Built for AI agents** — `--json` and `--machine` flags provide structured, parse-friendly output
+- **Persistent caching** — SWC transforms cached on disk via `sled`; survive daemon restarts
+
+## Architecture
+
+```
+┌─────────────┐     IPC (nng)      ┌──────────────┐
+│   jest CLI  │  ◄──────────────►  │    jestd     │
+│  (rjest)    │                    │   (Rust)     │
+└─────────────┘                    └──────┬───────┘
+                                        │
+                     ┌──────────────────┼──────────────────┐
+                     │                  │                  │
+                ┌────▼────┐      ┌────▼────┐      ┌────▼────┐
+                │ Worker 1│      │ Worker 2│      │ Worker N│
+                │ (Node)  │      │ (Node)  │      │ (Node)  │
+                └─────────┘      └─────────┘      └─────────┘
+```
+
+1. **Rust daemon (`jestd`)** — parses Jest config once, builds a dependency graph, watches the filesystem, and maintains a pool of warm Node.js workers.
+2. **SWC Transforms** — TypeScript/JSX compiled natively in Rust and cached by content hash (blake3). No Babel or `ts-jest` required.
+3. **Worker Pool** — persistent Node.js processes execute tests in a VM context, avoiding repeated V8 cold-start overhead.
+4. **CLI Shim** — forwards commands to the daemon over low-latency IPC (`nng`), then renders Jest-style output.
+
+## Daemon Management
 
 ```bash
 # Check daemon status
 npx rjest --daemon-status
 
-# Stop the daemon manually (caches persist on disk)
+# Stop the daemon (caches persist on disk)
 npx rjest --daemon-stop
 
 # Force a cold restart
 npx rjest --daemon-restart
 ```
 
-## Drop-in usage
+## Compatibility
 
-`rjest` is meant to replace Jest without rewrites:
+- **Node.js**: 16+
+- **Platforms**: macOS (Intel & Apple Silicon), Linux (x86_64 & aarch64), Windows (x86_64)
+- **Config files**: `jest.config.js`, `jest.config.ts`, `jest.config.mjs`, `package.json`
+- **Matchers**: `toBe`, `toEqual`, `toThrow`, `toHaveBeenCalled`, `resolves`, `rejects`, etc.
+- **Features**: snapshots, fake timers, `jest.fn()`, `jest.mock()`, coverage (Istanbul), watch mode
 
-1. Install the CLI alongside your project (e.g., `npm i -D rjest` or run it via `npx`).
-2. Run the same commands you already use (`npx jest`, `npm test`, pattern arguments, `--watch`, etc.). The CLI forwards every invocation to the daemon using the same flag semantics.
-3. Keep your existing `jest.config.*`, `setupFiles`, `moduleNameMapper`, and snapshot files; the daemon consumes all of them as-is by delegating config resolution to Node.
-4. Run multiple repos or terminals simultaneously; a single daemon multiplexes commands from different working directories by mapping each request to its project root, keeping caches and workers namespaced per repo.
-5. When you need an unsupported feature, pass `--fallback-to-jest` (or set `RJEST_FALLBACK=1`) to rerun that command with upstream Jest automatically while `rjest` continues to service compatible invocations.
+See the [compatibility matrix](https://github.com/neul-labs/rjest/blob/main/docs/compatibility.md) for full details.
 
-See `docs/compatibility.md` for a detailed matrix of supported flags, config fields, and known limitations plus guidance on when the fallback path activates.
-
-## For AI agents
-
-`rjest` is optimized for automated workflows where fast, structured feedback matters:
+## AI Agent Usage
 
 ```bash
-# Machine-readable JSON output
-npx rjest --json
+# Fast, structured output for automated workflows
+npx rjest --onlyChanged --machine
 
-# Compact structured output for agents
-npx rjest --machine
-
-# Run only tests affected by recent changes
-npx rjest --onlyChanged
-
-# Run tests related to specific files
-npx rjest --findRelatedTests src/api.ts src/utils.ts
+# Filter by test name pattern
+npx rjest --testNamePattern="authentication" --json
 ```
 
 ### Why agents benefit
 
-- **14ms feedback loops:** Warm runs return results in ~14 milliseconds instead of seconds, enabling rapid edit-test cycles.
-- **Structured output:** `--json` and `--machine` flags provide parse-friendly results with file paths, test names, durations, and error details.
-- **Selective execution:** Use `--testNamePattern` or file patterns to run only relevant tests, reducing noise and latency.
-- **Session continuity:** The daemon maintains state across invocations, so agents don't pay cold-start costs repeatedly.
+- **14ms feedback loops** — warm runs return results in ~14 milliseconds instead of seconds, enabling rapid edit-test cycles
+- **Structured output** — `--json` and `--machine` flags provide parse-friendly results with file paths, test names, durations, and error details
+- **Selective execution** — run only relevant tests by name pattern or file path
+- **Session continuity** — the daemon maintains state across invocations, so agents don't pay cold-start costs repeatedly
 
-### Example agent workflow
+## Technology Choices
 
-```bash
-# 1. Agent makes code changes
-# 2. Run affected tests with machine output
-npx rjest --onlyChanged --machine
-
-# Or filter by test name pattern
-npx rjest --testNamePattern="authentication" --json
-
-# 3. Parse JSON results
-# 4. If failures: read error details, fix code, re-run
-# 5. Repeat until green
-```
-
-## Technology choices
-
-- **nng (nanomsg-next-gen)** handles the bidirectional messaging between CLI and daemon with low-latency Unix domain sockets.
-- **SWC** provides native Rust TypeScript/JSX compilation, 10-100× faster than Babel.
-- **sled** stores transform artifacts keyed by content hash (blake3) so caches survive restarts without external services.
-- **rayon** parallelizes file transforms across CPU cores.
-
-## Performance expectations
-
-Measured benchmarks on a TypeScript test suite (2 files, 19 tests):
-
-| Metric | rjest | Jest | Speedup |
-| --- | --- | --- | --- |
-| Cold start | 1.9s | 1.4s | 0.7× |
-| Warm run | **14ms** | 1.4s | **100×** |
-
-- **Cold start:** First run spawns workers, warms up V8, parses config, discovers tests, and compiles everything. Cold starts are slightly slower due to daemon initialization overhead.
-- **Warm runs:** Once workers are hot and transforms cached, tests return in **under 15 milliseconds**. This is where rjest delivers its largest gains.
-- **Memory:** The daemon + 4 workers uses ~200MB total. Idle workers are automatically cleaned up after 60 seconds.
-
-See [BENCHMARK.md](BENCHMARK.md) for detailed benchmark methodology and results.
-
-## Roadmap highlights
-
-- Ship a reliable Node-backed worker pool first; evaluate a custom Rust+JS runtime later for additional gains.
-- Harden watch mode, change detection, and selective test execution (e.g., “only run tests affected by these files”).
-- Broaden environment support (jsdom, custom environments), mocking modes, and multi-project setups.
-- Improve diagnostics with rich JSON payloads, better stack traces, and observable daemon health metrics.
-- Build an automated benchmark suite that compares cold/warm run latency against upstream Jest across representative repos, publishing results with each release.
-- Maintain compatibility tests that execute Jest’s official suite (and additional regression projects) through both `rjest` and upstream Jest to catch behavioral drift early.
-- See `docs/roadmap.md` for the full milestone plan from foundations to ecosystem polish.
-
-With these pieces in place, `rjest` becomes an ideal test runner for AI agents and developers who need tight edit-test cycles on large TypeScript or React codebases.
+- **nng (nanomsg-next-gen)** — low-latency IPC between CLI and daemon via Unix domain sockets
+- **SWC** — native Rust TypeScript/JSX compilation, 10-100x faster than Babel
+- **sled** — embedded disk cache for transforms keyed by content hash (blake3)
+- **rayon** — parallelizes file transforms across CPU cores
 
 ## Documentation
 
-- [Architecture](docs/architecture.md) – How the daemon, CLI, and workers fit together
-- [Compatibility](docs/compatibility.md) – Supported flags, config fields, and fallback behavior
-- [Performance](docs/performance.md) – Benchmarks and tuning guidance
-- [Roadmap](docs/roadmap.md) – Milestones from MVP to ecosystem polish
+- [Full Documentation](https://docs.neullabs.com/rjest)
+- [Architecture](https://github.com/neul-labs/rjest/blob/main/docs/architecture.md)
+- [Compatibility](https://github.com/neul-labs/rjest/blob/main/docs/compatibility.md)
+- [Performance](https://github.com/neul-labs/rjest/blob/main/docs/performance.md)
+- [Changelog](https://github.com/neul-labs/rjest/blob/main/CHANGELOG.md)
 
 ## Contributing
 
