@@ -36,7 +36,7 @@ function getPlatformInfo() {
       break;
     case 'arm64':
     case 'aarch64':
-      archName = 'aarch64';
+      archName = 'arm64';
       break;
     default:
       throw new Error(`Unsupported architecture: ${arch}`);
@@ -45,14 +45,23 @@ function getPlatformInfo() {
   return { osName, archName };
 }
 
+function getReleaseArch(osName, archName) {
+  // Release archives use different naming per platform:
+  //   macos-arm64, linux-aarch64, windows-x86_64, etc.
+  if (osName === 'linux' && archName === 'arm64') {
+    return 'aarch64';
+  }
+  return archName;
+}
+
 function getAssetUrl(version, osName, archName) {
   const ext = osName === 'windows' ? '.zip' : '.tar.gz';
-  const name = `rjest-${osName}-${archName}${ext}`;
+  const releaseArch = getReleaseArch(osName, archName);
+  const name = `rjest-${osName}-${releaseArch}${ext}`;
   return `${DOWNLOAD_BASE}/v${version}/${name}`;
 }
 
 function getChecksumUrl(version, osName, archName) {
-  // We'll check checksums from a SHASUMS file
   return `${DOWNLOAD_BASE}/v${version}/SHASUMS256.txt`;
 }
 
@@ -79,9 +88,10 @@ async function downloadFile(url, dest) {
 }
 
 async function verifyChecksum(filePath, checksumFile, osName, archName) {
+  const releaseArch = getReleaseArch(osName, archName);
   const expectedChecksum = checksumFile
     .split('\n')
-    .find(line => line.includes(`jest-${osName}-${archName}`))
+    .find(line => line.includes(`rjest-${osName}-${releaseArch}`))
     ?.split(' ')[0];
 
   if (!expectedChecksum) {
@@ -186,6 +196,11 @@ async function install() {
     const rjestPath = path.join(binDir, osName === 'windows' ? 'rjest.exe' : 'rjest');
     fs.copyFileSync(binaryPath, rjestPath);
     fs.chmodSync(rjestPath, 0o755);
+
+    // Also create rjest-install symlink/copy for npx rjest-install
+    const rjestInstallPath = path.join(binDir, osName === 'windows' ? 'rjest-install.exe' : 'rjest-install');
+    fs.copyFileSync(binaryPath, rjestInstallPath);
+    fs.chmodSync(rjestInstallPath, 0o755);
 
     console.log(`Installed successfully to ${finalPath}`);
   } finally {

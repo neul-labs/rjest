@@ -12,7 +12,7 @@ name = "discovery"
 harness = false
 
 [dependencies]
-rjest-protocol = { path = "../rjest-protocol" }
+rjest-protocol = { workspace = true }
 anyhow = "1.0"
 tempfile = "3"
 

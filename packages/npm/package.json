@@ -5,7 +5,8 @@
   "main": "lib/index.js",
   "bin": {
     "jest": "./bin/jest",
-    "rjest": "./bin/jest"
+    "rjest": "./bin/jest",
+    "rjest-install": "./bin/jest"
   },
   "scripts": {
     "install": "node lib/install.js",
