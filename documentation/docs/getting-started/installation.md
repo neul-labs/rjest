@@ -10,7 +10,7 @@
 The recommended way to install `rjest` for Node.js projects:
 
 ```bash
-npm install -D rjest-cli
+npm install -D rjest-install
 ```
 
 Then use it just like Jest:
@@ -45,7 +45,7 @@ This installs the `jest` and `jestd` binaries into your Cargo bin directory (usu
 For Python projects or environments where `pip` is preferred:
 
 ```bash
-pip install rjest-cli
+pip install rjest-install
 ```
 
 This installs a Python wrapper that calls the Rust binary.

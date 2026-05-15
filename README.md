@@ -21,7 +21,7 @@ The daemon caches SWC transforms, maintains pre-warmed Node workers, and orchest
 
 ```bash
 # npm (recommended for Node projects)
-npm install -D rjest-cli
+npm install -D rjest-install
 
 # Homebrew (macOS/Linux)
 brew tap neul-labs/tap
@@ -31,7 +31,7 @@ brew install rjest
 cargo install rjest
 
 # pip (Python ecosystem)
-pip install rjest-cli
+pip install rjest-install
 ```
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
