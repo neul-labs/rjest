@@ -35,10 +35,11 @@ jest
 jest
 ```
 
-2. Check for port conflicts:
+2. Check for stale socket files:
 ```bash
-# See if something else is using the socket
-ls -la /tmp/rjest-*
+# Daemon socket lives at $XDG_RUNTIME_DIR/rjest-<uid>.sock
+# or /tmp/rjest-<uid>.sock as fallback
+ls -la "${XDG_RUNTIME_DIR:-/tmp}"/rjest-*.sock
 ```
 
 3. Check daemon logs:
@@ -59,7 +60,7 @@ pkill -f jestd
 
 2. Remove stale socket files:
 ```bash
-rm -f /tmp/rjest-*
+rm -f "${XDG_RUNTIME_DIR:-/tmp}"/rjest-*.sock
 ```
 
 3. Restart:
@@ -301,6 +302,9 @@ RUST_LOG=debug jest 2>&1 | tee rjest.log
 
 ```bash
 jest --daemon-status
+
+# Detailed per-worker state and detected issues
+jest --daemon-health
 ```
 
 ### Version Information
@@ -331,8 +335,8 @@ pkill -f rjest
 # Clear all caches
 rm -rf ~/.cache/rjest
 
-# Clear transform cache
-rm -rf /tmp/rjest-*
+# Clear stale daemon sockets
+rm -f "${XDG_RUNTIME_DIR:-/tmp}"/rjest-*.sock
 
 # Start fresh
 jest

@@ -20,33 +20,48 @@ rjest is designed as a drop-in replacement for Jest. Most projects can migrate w
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| `jest.mock()` | Basic | Module mocking works, factory functions supported |
-| Fake timers | Basic | `useFakeTimers()`, `advanceTimersByTime()` |
-| Coverage | Not yet | Code coverage not implemented |
-| Watch mode | Basic | File watching works, interactive mode limited |
+| `jest.mock()` | Basic | Module mocking works; factory functions supported |
+| Fake timers | Basic | `useFakeTimers()`, `advanceTimersByTime()`, `runAllTimers()` |
+| Coverage (`--coverage`) | Planned | CLI flag accepted; instrumentation is roadmap status "Planned" in [`docs/compatibility.md`][compat] |
+| Watch mode | Basic | File watching and incremental re-runs work; interactive Jest watch UI commands are not implemented |
+| `--watchAll` | Planned | Currently behaves like `--watch` |
+| `--onlyChanged` / `--findRelatedTests` | Planned | CLI flags accepted; full dependency-graph resolution is roadmap status "Planned" |
+
+[compat]: https://github.com/neul-labs/rjest/blob/main/docs/compatibility.md
 
 ### Not Yet Supported
 
-- Code coverage (`--coverage`)
-- Interactive watch mode commands
-- Custom reporters
-- `jest.requireActual()`
-- Module reset between tests
-- `testEnvironment` options (jsdom, etc.)
+- Interactive watch-mode keyboard commands
+- Custom reporters (only the default reporter is wired up)
+- `jest.requireActual()` / `jest.isolateModules()`
+- `testEnvironment` values other than `node` (jsdom is roadmap status "Partial")
+- `globalSetup` / `globalTeardown`
+- Multi-project `projects` arrays (roadmap status "Planned")
+- `automock` / `createMockFromModule` (use `--fallback-to-jest` for these)
 
 ## Migration Steps
 
 ### Step 1: Install rjest
 
+The recommended path for Node.js projects is npm:
+
 ```bash
-# Build from source
-git clone https://github.com/user/rjest.git
+npm install -D rjest-install
+```
+
+Or build from source:
+
+```bash
+git clone https://github.com/neul-labs/rjest.git
 cd rjest
 cargo build --release
 
 # Add to PATH
 export PATH="$PATH:$(pwd)/target/release"
 ```
+
+See [Installation](installation.md) for all supported channels (npm,
+Homebrew, Cargo, PyPI).
 
 ### Step 2: Verify Configuration
 

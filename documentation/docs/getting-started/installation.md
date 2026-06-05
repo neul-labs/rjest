@@ -38,7 +38,10 @@ If you have the Rust toolchain installed:
 cargo install rjest
 ```
 
-This installs the `jest` and `jestd` binaries into your Cargo bin directory (usually `~/.cargo/bin`).
+This installs the `jest` (CLI shim) and `jestd` (background daemon) binaries
+into your Cargo bin directory (usually `~/.cargo/bin`). The daemon is
+spawned automatically by the CLI; you should not need to run `jestd`
+directly.
 
 ## Install from PyPI
 
