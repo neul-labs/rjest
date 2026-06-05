@@ -1,6 +1,6 @@
 site_name: rjest Documentation
 site_description: A blazing-fast Jest-compatible test runner written in Rust
-site_url: https://rjest.docs.neullabs.com/
+site_url: https://docs.neullabs.com/rjest/
 repo_url: https://github.com/neul-labs/rjest
 repo_name: neul-labs/rjest
 edit_uri: edit/main/documentation/docs/
