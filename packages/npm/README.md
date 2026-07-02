@@ -6,6 +6,8 @@
 
 > **A blazing-fast, drop-in replacement for Jest.** Install via npm and run your tests in ~14ms on warm runs — 100x faster than standard Jest.
 
+**[Website](https://rjest.neullabs.com)** · **[Documentation](https://docs.neullabs.com/rjest)** · **[GitHub](https://github.com/neul-labs/rjest)**
+
 `rjest-install` is the official npm distribution of **rjest**, a Rust-based test runner that keeps a background daemon (`jestd`) alive across invocations. It reads your existing `jest.config.*` files with zero configuration changes and supports the same CLI flags you already use (`--watch`, `--coverage`, `--runInBand`, `--testNamePattern`, `--json`, `--machine`).
 
 ## Why rjest?
@@ -118,6 +120,20 @@ npx rjest --testNamePattern="authentication" --json
 ## Contributing
 
 Contributions are welcome! Please open an issue or PR on the [main repository](https://github.com/neul-labs/rjest).
+
+## Part of the Neul Labs toolchain
+
+Explore the rest of the Neul Labs developer tools:
+
+| Project | Description |
+| --- | --- |
+| [rpytest](https://github.com/neul-labs/rpytest) | Run your pytest suite faster. Change nothing. |
+| [rninja](https://github.com/neul-labs/rninja) | Drop-in Ninja replacement with built-in caching. |
+| [gity](https://github.com/neul-labs/gity) | Make large Git repositories feel instant. |
+| [stkd](https://github.com/neul-labs/stkd) | Stacked diffs for GitHub and GitLab. |
+| [grite](https://github.com/neul-labs/grite) | The issue tracker that lives in your repo. Built for AI agents. |
+
+Learn more at [neullabs.com](https://www.neullabs.com).
 
 ## License
 

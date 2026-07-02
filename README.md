@@ -9,6 +9,8 @@
 
 > **A blazing-fast, drop-in replacement for Jest.** Warm runs complete in ~14ms — **100x faster** than standard Jest. Zero configuration changes required.
 
+**[Website](https://rjest.neullabs.com)** · **[Documentation](https://docs.neullabs.com/rjest)** · **[GitHub](https://github.com/neul-labs/rjest)**
+
 `rjest` keeps a Rust daemon (`jestd`) running in the background, caching SWC transforms and pre-warming Node.js workers across test invocations. It reads your existing `jest.config.*` files with **zero config changes** and supports the same CLI flags you already use: `--watch`, `--coverage`, `--runInBand`, `--testNamePattern`, `--json`, `--machine`.
 
 ## Installation
@@ -21,8 +23,8 @@ npm install -D rjest-install
 brew tap neul-labs/tap
 brew install rjest
 
-# Cargo (Rust toolchain)
-cargo install rjest
+# Cargo (Rust toolchain) — installs the `jest` CLI and `jestd` daemon
+cargo install rjest-cli jestd
 
 # pip (Python ecosystem)
 pip install rjest-install
@@ -152,6 +154,20 @@ cargo build
 # Run tests
 cargo test
 ```
+
+## Part of the Neul Labs toolchain
+
+Explore the rest of the Neul Labs developer tools:
+
+| Project | Description |
+| --- | --- |
+| [rpytest](https://github.com/neul-labs/rpytest) | Run your pytest suite faster. Change nothing. |
+| [rninja](https://github.com/neul-labs/rninja) | Drop-in Ninja replacement with built-in caching. |
+| [gity](https://github.com/neul-labs/gity) | Make large Git repositories feel instant. |
+| [stkd](https://github.com/neul-labs/stkd) | Stacked diffs for GitHub and GitLab. |
+| [grite](https://github.com/neul-labs/grite) | The issue tracker that lives in your repo. Built for AI agents. |
+
+Learn more at [neullabs.com](https://www.neullabs.com).
 
 ## License
 

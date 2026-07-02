@@ -4,9 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 documentation.workspace = true
 readme.workspace = true
-description = "Jest-compatible CLI that communicates with jestd daemon"
+authors.workspace = true
+description = "A blazing-fast, drop-in replacement for Jest — command-line interface."
+keywords = ["jest", "testing", "test-runner", "javascript", "typescript"]
+categories = ["development-tools::testing", "command-line-utilities"]
 
 [[bin]]
 name = "jest"

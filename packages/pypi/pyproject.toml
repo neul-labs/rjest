@@ -20,11 +20,12 @@ classifiers = [
 ]
 keywords = ["jest", "testing", "rust", "runner"]
 authors = [
-    {name = "Dipankar Sarkar", email = "dipankarsarkar@outlook.com"}
+    {name = "Neul Labs", email = "contact@neullabs.com"}
 ]
 
 [project.urls]
-Homepage = "https://github.com/neul-labs/rjest"
+Homepage = "https://rjest.neullabs.com"
+Documentation = "https://docs.neullabs.com/rjest"
 Repository = "https://github.com/neul-labs/rjest"
 Issues = "https://github.com/neul-labs/rjest/issues"
 
